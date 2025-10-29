@@ -9,8 +9,8 @@ import msal
 import os
 import requests
 from pathlib import Path
-from datetime import datetime
 import calendar
+import random
 
 # Page configuration
 st.set_page_config(
@@ -21,11 +21,11 @@ st.set_page_config(
 )
 
 # Azure AD app details
-client_id = os.getenv('AZURE_CLIENT_ID', 'your-client-id')
-client_secret = os.getenv('AZURE_CLIENT_SECRET', 'your-client-secret')
-tenant_id = os.getenv('AZURE_TENANT_ID', 'your-tenant-id')
+client_id = os.getenv('AZURE_CLIENT_ID', 'yourid')
+client_secret = os.getenv('AZURE_CLIENT_SECRET', 'yoursecret')
+tenant_id = os.getenv('AZURE_TENANT_ID', 'yourtenant')
 authority = f"https://login.microsoftonline.com/{tenant_id}"
-redirect_uri = os.getenv('REDIRECT_URI', 'http://localhost:8501')
+redirect_uri = os.getenv('REDIRECT_URI', 'https://apps.btgi.com.au:8515')
 scope = ["User.Read"]
 
 # Initialize MSAL
@@ -71,15 +71,6 @@ st.markdown("""
     .stCard:hover {
         box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1);
         transform: translateY(-2px);
-    }
-    
-    /* Metric cards */
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 16px;
-        padding: 24px;
-        color: white;
-        box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
     }
     
     /* Status badges */
@@ -177,8 +168,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
 if 'user' not in st.session_state:
     st.session_state.user = None
 if 'leaves' not in st.session_state:
@@ -195,7 +184,7 @@ DATA_DIR.mkdir(exist_ok=True)
 USERS_FILE = DATA_DIR / "users.json"
 LEAVES_FILE = DATA_DIR / "leaves.json"
 
-# Default data structures. Will automatically create data/users.json and data/leaves.json if not present.
+# Default data structures
 DEFAULT_USERS = {
     "mark.torres@btgi.com.au": {
         "name": "Mark Torres",
@@ -244,190 +233,41 @@ DEFAULT_USERS = {
 }
 
 DEFAULT_LEAVES = [
-    {
-        "id": 1,
-        "user_email": "jhunriel.gaspar@btgi.com.au",
-        "user_name": "Jhunriel Gaspar",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-09-15",
-        "end_date": "2025-09-19",
-        "days": 5,
-        "reason": "Family vacation",
-        "status": "Approved",
-        "applied_date": "2025-08-20",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-08-21"
-    },
-    {
-        "id": 2,
-        "user_email": "jhunriel.gaspar@btgi.com.au",
-        "user_name": "Jhunriel Gaspar",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-10-10",
-        "end_date": "2025-10-12",
-        "days": 3,
-        "reason": "Personal matters",
-        "status": "Approved",
-        "applied_date": "2025-09-25",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-09-26"
-    },
-    {
-        "id": 3,
-        "user_email": "jhunriel.gaspar@btgi.com.au",
-        "user_name": "Jhunriel Gaspar",
-        "leave_type": "Sick Leave",
-        "start_date": "2025-08-05",
-        "end_date": "2025-08-07",
-        "days": 3,
-        "reason": "Medical appointment and recovery",
-        "status": "Approved",
-        "applied_date": "2025-08-04",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-08-04"
-    },
-    {
-        "id": 4,
-        "user_email": "elsy.asmar@btgi.com.au",
-        "user_name": "Elsy Asmar",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-07-20",
-        "end_date": "2025-07-23",
-        "days": 4,
-        "reason": "Summer break",
-        "status": "Approved",
-        "applied_date": "2025-07-01",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-07-02"
-    },
-    {
-        "id": 5,
-        "user_email": "elsy.asmar@btgi.com.au",
-        "user_name": "Elsy Asmar",
-        "leave_type": "Sick Leave",
-        "start_date": "2025-09-08",
-        "end_date": "2025-09-08",
-        "days": 1,
-        "reason": "Medical consultation",
-        "status": "Approved",
-        "applied_date": "2025-09-07",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-09-07"
-    },
-    {
-        "id": 6,
-        "user_email": "aj.morong@btgi.com.au",
-        "user_name": "AJ Morong",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-08-12",
-        "end_date": "2025-08-16",
-        "days": 5,
-        "reason": "Attending family event",
-        "status": "Approved",
-        "applied_date": "2025-07-28",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-07-29"
-    },
-    {
-        "id": 7,
-        "user_email": "aj.morong@btgi.com.au",
-        "user_name": "AJ Morong",
-        "leave_type": "Sick Leave",
-        "start_date": "2025-10-15",
-        "end_date": "2025-10-16",
-        "days": 2,
-        "reason": "Flu symptoms",
-        "status": "Approved",
-        "applied_date": "2025-10-14",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-10-14"
-    },
-    {
-        "id": 8,
-        "user_email": "mark.torres@btgi.com.au",
-        "user_name": "Mark Torres",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-06-10",
-        "end_date": "2025-06-10",
-        "days": 1,
-        "reason": "Personal appointment",
-        "status": "Approved",
-        "applied_date": "2025-06-05",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-06-05"
-    },
-    {
-        "id": 9,
-        "user_email": "mark.torres@btgi.com.au",
-        "user_name": "Mark Torres",
-        "leave_type": "Sick Leave",
-        "start_date": "2025-09-20",
-        "end_date": "2025-09-22",
-        "days": 3,
-        "reason": "Medical treatment",
-        "status": "Approved",
-        "applied_date": "2025-09-19",
-        "reviewed_by": "Mark Torres",
-        "reviewed_date": "2025-09-19"
-    },
-    {
-        "id": 10,
-        "user_email": "jhunriel.gaspar@btgi.com.au",
-        "user_name": "Jhunriel Gaspar",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-11-15",
-        "end_date": "2025-11-18",
-        "days": 4,
-        "reason": "Extended weekend trip",
-        "status": "Pending",
-        "applied_date": "2025-10-28",
-        "reviewed_by": None,
-        "reviewed_date": None
-    },
-    {
-        "id": 11,
-        "user_email": "elsy.asmar@btgi.com.au",
-        "user_name": "Elsy Asmar",
-        "leave_type": "Annual Leave",
-        "start_date": "2025-12-20",
-        "end_date": "2025-12-31",
-        "days": 12,
-        "reason": "Year-end holidays",
-        "status": "Pending",
-        "applied_date": "2025-10-25",
-        "reviewed_by": None,
-        "reviewed_date": None
-    }
+    {"id": 1, "user_email": "jhunriel.gaspar@btgi.com.au", "user_name": "Jhunriel Gaspar", "leave_type": "Annual Leave", "start_date": "2025-09-15", "end_date": "2025-09-19", "days": 5, "reason": "Family vacation", "status": "Approved", "applied_date": "2025-08-20", "reviewed_by": "Mark Torres", "reviewed_date": "2025-08-21"},
+    {"id": 2, "user_email": "jhunriel.gaspar@btgi.com.au", "user_name": "Jhunriel Gaspar", "leave_type": "Annual Leave", "start_date": "2025-10-10", "end_date": "2025-10-12", "days": 3, "reason": "Personal matters", "status": "Approved", "applied_date": "2025-09-25", "reviewed_by": "Mark Torres", "reviewed_date": "2025-09-26"},
+    {"id": 3, "user_email": "jhunriel.gaspar@btgi.com.au", "user_name": "Jhunriel Gaspar", "leave_type": "Sick Leave", "start_date": "2025-08-05", "end_date": "2025-08-07", "days": 3, "reason": "Medical appointment and recovery", "status": "Approved", "applied_date": "2025-08-04", "reviewed_by": "Mark Torres", "reviewed_date": "2025-08-04"},
+    {"id": 4, "user_email": "elsy.asmar@btgi.com.au", "user_name": "Elsy Asmar", "leave_type": "Annual Leave", "start_date": "2025-07-20", "end_date": "2025-07-23", "days": 4, "reason": "Summer break", "status": "Approved", "applied_date": "2025-07-01", "reviewed_by": "Mark Torres", "reviewed_date": "2025-07-02"},
+    {"id": 5, "user_email": "elsy.asmar@btgi.com.au", "user_name": "Elsy Asmar", "leave_type": "Sick Leave", "start_date": "2025-09-08", "end_date": "2025-09-08", "days": 1, "reason": "Medical consultation", "status": "Approved", "applied_date": "2025-09-07", "reviewed_by": "Mark Torres", "reviewed_date": "2025-09-07"},
+    {"id": 6, "user_email": "aj.morong@btgi.com.au", "user_name": "AJ Morong", "leave_type": "Annual Leave", "start_date": "2025-08-12", "end_date": "2025-08-16", "days": 5, "reason": "Attending family event", "status": "Approved", "applied_date": "2025-07-28", "reviewed_by": "Mark Torres", "reviewed_date": "2025-07-29"},
+    {"id": 7, "user_email": "aj.morong@btgi.com.au", "user_name": "AJ Morong", "leave_type": "Sick Leave", "start_date": "2025-10-15", "end_date": "2025-10-16", "days": 2, "reason": "Flu symptoms", "status": "Approved", "applied_date": "2025-10-14", "reviewed_by": "Mark Torres", "reviewed_date": "2025-10-14"},
+    {"id": 8, "user_email": "mark.torres@btgi.com.au", "user_name": "Mark Torres", "leave_type": "Annual Leave", "start_date": "2025-06-10", "end_date": "2025-06-10", "days": 1, "reason": "Personal appointment", "status": "Approved", "applied_date": "2025-06-05", "reviewed_by": "Mark Torres", "reviewed_date": "2025-06-05"},
+    {"id": 9, "user_email": "mark.torres@btgi.com.au", "user_name": "Mark Torres", "leave_type": "Sick Leave", "start_date": "2025-09-20", "end_date": "2025-09-22", "days": 3, "reason": "Medical treatment", "status": "Approved", "applied_date": "2025-09-19", "reviewed_by": "Mark Torres", "reviewed_date": "2025-09-19"},
+    {"id": 10, "user_email": "jhunriel.gaspar@btgi.com.au", "user_name": "Jhunriel Gaspar", "leave_type": "Annual Leave", "start_date": "2025-11-15", "end_date": "2025-11-18", "days": 4, "reason": "Extended weekend trip", "status": "Pending", "applied_date": "2025-10-28", "reviewed_by": None, "reviewed_date": None},
+    {"id": 11, "user_email": "elsy.asmar@btgi.com.au", "user_name": "Elsy Asmar", "leave_type": "Annual Leave", "start_date": "2025-12-20", "end_date": "2025-12-31", "days": 12, "reason": "Year-end holidays", "status": "Pending", "applied_date": "2025-10-25", "reviewed_by": None, "reviewed_date": None}
 ]
 
 # JSON file operations
 def load_users():
-    """Load users from JSON file"""
     if USERS_FILE.exists():
         with open(USERS_FILE, 'r') as f:
             return json.load(f)
     else:
-        # Create default users file
         save_users(DEFAULT_USERS)
         return DEFAULT_USERS.copy()
 
 def save_users(users_data):
-    """Save users to JSON file"""
     with open(USERS_FILE, 'w') as f:
         json.dump(users_data, f, indent=2)
 
 def load_leaves():
-    """Load leaves from JSON file"""
     if LEAVES_FILE.exists():
         with open(LEAVES_FILE, 'r') as f:
             return json.load(f)
     else:
-        # Create default leaves file
         save_leaves(DEFAULT_LEAVES)
         return DEFAULT_LEAVES.copy()
 
 def save_leaves(leaves_data):
-    """Save leaves to JSON file"""
     with open(LEAVES_FILE, 'w') as f:
         json.dump(leaves_data, f, indent=2)
 
@@ -439,39 +279,84 @@ if not st.session_state.leaves:
 
 # MSAL Authentication Functions
 def get_auth_url():
-    """Get Azure AD authentication URL"""
-    auth_url = msal_app.get_authorization_request_url(scope, redirect_uri=redirect_uri)
-    return auth_url
+    """Generate authentication URL with state parameter"""
+    state = f"{datetime.now().timestamp()}_{random.random()}"
+    st.session_state['auth_state'] = state
+    st.session_state['expected_state'] = state
+    
+    if MSAL_ENABLED:
+        try:
+            return msal_app.get_authorization_request_url(
+                scopes=scope,
+                redirect_uri=redirect_uri,
+                state=state,
+                prompt="select_account"
+            )
+        except Exception as e:
+            st.error(f"Error generating auth URL: {e}")
+            return None
+    return None
+
+def verify_state(received_state):
+    """Verify the state parameter"""
+    expected_state = st.session_state.get('auth_state') or st.session_state.get('expected_state')
+    
+    if not expected_state:
+        st.warning("⚠️ State verification skipped due to session data loss. Proceeding with authentication...")
+        return True
+    
+    if received_state != expected_state:
+        st.error("Login failed due to a state mismatch. Please try signing in again.")
+        if 'auth_state' in st.session_state:
+            del st.session_state['auth_state']
+        if 'expected_state' in st.session_state:
+            del st.session_state['expected_state']
+        return False
+    
+    if 'auth_state' in st.session_state:
+        del st.session_state['auth_state']
+    if 'expected_state' in st.session_state:
+        del st.session_state['expected_state']
+    return True
 
 def get_token_from_code(auth_code):
     """Acquire token from authorization code"""
-    token = msal_app.acquire_token_by_authorization_code(
-        auth_code, 
-        scopes=scope, 
-        redirect_uri=redirect_uri
-    )
-    return token
+    if not MSAL_ENABLED:
+        return {"error": "MSAL not configured"}
+    try:
+        result = msal_app.acquire_token_by_authorization_code(
+            auth_code,
+            scopes=scope,
+            redirect_uri=redirect_uri
+        )
+        return result
+    except Exception as e:
+        st.error(f"Exception during token acquisition: {str(e)}")
+        return {"error": str(e)}
 
-def get_user_profile(token):
-    """Retrieve user profile using the token"""
-    headers = {
-        'Authorization': 'Bearer ' + token['access_token']
-    }
-    response = requests.get('https://graph.microsoft.com/v1.0/me', headers=headers)
-    return response.json()
+def get_user_profile(access_token):
+    """Get user profile from Microsoft Graph API"""
+    headers = {'Authorization': f"Bearer {access_token}"}
+    try:
+        response = requests.get('https://graph.microsoft.com/v1.0/me', headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching user profile: {e}")
+        return None
 
 def authenticate_user(user_email: str, user_name: str) -> Optional[Dict]:
     """Authenticate user and return user data"""
-    # Check if user exists in our system
+    user_email = user_email.lower()
+    
     if user_email in st.session_state.users:
         user = st.session_state.users[user_email]
-        user['name'] = user_name  # Update name from Azure AD
-        save_users(st.session_state.users)
+        if user.get('name') != user_name:
+            user['name'] = user_name
+            save_users(st.session_state.users)
         return user
     else:
-        # Create new user if they don't exist (auto-provisioning)
-        is_admin = user_email == ADMIN_EMAIL
-        
+        is_admin = user_email == ADMIN_EMAIL.lower()
         new_user = {
             "name": user_name,
             "email": user_email,
@@ -485,23 +370,18 @@ def authenticate_user(user_email: str, user_name: str) -> Optional[Dict]:
         }
         st.session_state.users[user_email] = new_user
         save_users(st.session_state.users)
+        st.success(f"New user '{user_name}' created successfully.")
         return new_user
-
-def mock_msal_login(email: str) -> Optional[Dict]:
-    """Mock MSAL authentication for demo/development"""
-    if email in st.session_state.users:
-        return st.session_state.users[email]
-    return None
 
 def login_page():
     """Display login page with Microsoft authentication"""
     st.markdown("""
-        <div style='text-align: center; padding: 60px 20px;'>
+        <div style='text-align: center; padding: 30px 20px;'>
             <h1 style='font-size: 3rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                        -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px;'>
                 BTG Leave Management Portal
             </h1>
-            <p style='font-size: 1.2rem; color: #64748b; margin-bottom: 40px;'>
+            <p style='font-size: 1.2rem; color: #64748b; margin-bottom: 1px;'>
                 Manage your leaves efficiently and stay organized
             </p>
         </div>
@@ -510,35 +390,42 @@ def login_page():
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        st.markdown("### 🔐 Sign in with Microsoft (Pending)")
+        # st.markdown("### 🔐 Sign in with Microsoft")
         st.markdown("---")
         
-        # Check for authorization code in URL parameters
         query_params = st.query_params
         
         if MSAL_ENABLED and 'code' in query_params:
-            # Handle OAuth callback
             auth_code = query_params['code']
+            received_state = query_params.get('state')
+            
+            if not verify_state(received_state):
+                if st.button("Try Sign In Again"):
+                    st.query_params.clear()
+                    st.rerun()
+                st.stop()
             
             with st.spinner('Authenticating...'):
                 try:
                     token = get_token_from_code(auth_code)
+                    st.query_params.clear()
                     
-                    if 'access_token' in token:
-                        user_profile = get_user_profile(token)
-                        user_email = user_profile.get('mail') or user_profile.get('userPrincipalName')
-                        user_name = user_profile.get('displayName', 'User')
+                    if token and 'access_token' in token:
+                        user_profile = get_user_profile(token['access_token'])
                         
-                        user = authenticate_user(user_email, user_name)
-                        
-                        if user:
-                            st.session_state.authenticated = True
-                            st.session_state.user = user
-                            st.session_state.access_token = token['access_token']
-                            st.query_params.clear()
-                            st.rerun()
+                        if user_profile:
+                            user_email = user_profile.get('mail') or user_profile.get('userPrincipalName')
+                            user_name = user_profile.get('displayName', 'User')
+                            
+                            user = authenticate_user(user_email, user_name)
+                            
+                            if user:
+                                st.session_state.user = user
+                                st.rerun()
+                            else:
+                                st.error("❌ User authentication failed.")
                         else:
-                            st.error("❌ User authentication failed.")
+                            st.error("Could not fetch user profile from Microsoft.")
                     else:
                         st.error(f"❌ Authentication failed: {token.get('error_description', 'Unknown error')}")
                 
@@ -549,21 +436,24 @@ def login_page():
             st.markdown("<br>", unsafe_allow_html=True)
             auth_url = get_auth_url()
             
-            st.markdown(f"""
-                <a href="{auth_url}" target="_self">
-                    <button style='width: 100%; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                   color: white; border: none; border-radius: 12px; font-size: 1.1rem;
-                                   font-weight: 600; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-                        🚀 Sign in with Microsoft
-                    </button>
-                </a>
-            """, unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.info("🔒 **Secure Authentication**: You will be redirected to Microsoft login.")
+            if auth_url:
+                st.markdown(f"""
+                    <a href="{auth_url}" target="_self">
+                        <button style='width: 100%; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                       color: white; border: none; border-radius: 12px; font-size: 1.1rem;
+                                       font-weight: 600; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
+                            🚀 Sign in with Microsoft
+                        </button>
+                    </a>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.info("🔒 **Secure Authentication**: You will be redirected to Microsoft login.")
+            else:
+                st.error("Could not generate login link. Please check the configuration.")
         
         else:
-            st.warning("⚠️ **Demo Mode**: MSAL not configured. Using demo authentication.")
+            st.warning("⚠️ **Demo Mode**: MSAL not configured.")
             st.markdown("<br>", unsafe_allow_html=True)
             
             email = st.selectbox(
@@ -575,52 +465,49 @@ def login_page():
             st.markdown("<br>", unsafe_allow_html=True)
             
             if st.button("🚀 Sign in (Demo)", use_container_width=True):
-                user = mock_msal_login(email)
-                if user:
-                    st.session_state.authenticated = True
-                    st.session_state.user = user
+                if email in st.session_state.users:
+                    st.session_state.user = st.session_state.users[email]
                     st.rerun()
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.info("💡 **For Later Setup**: Configure Microsoft Authentication and Azure AD credentials in environment variables")
+            st.info("💡 Configure Azure AD credentials in environment variables")
 
 def get_leave_years():
-    """Gets a sorted list of unique years from leave data, ensuring current/default year exists."""
-    all_years_set = set()
-    default_year = 2025  # Use 2025 as the default as requested
-    all_years_set.add(default_year)
-
-    # Get current year as a fallback if 2025 isn't present initially
-    current_year = datetime.now().year
-    all_years_set.add(current_year)
-
-    if 'leaves' in st.session_state and st.session_state.leaves:
-        for leave in st.session_state.leaves:
-            try:
-                # Extract year from the start_date string
-                year = datetime.strptime(leave['start_date'], '%Y-%m-%d').year
-                all_years_set.add(year)
-            except (ValueError, KeyError):
-                # Skip leaves with missing or malformed dates
-                continue
-
-    # Return sorted list, most recent first
-    return sorted(list(all_years_set), reverse=True)
+    """Get list of years from leave data"""
+    years = set()
+    years.add(2025)
+    years.add(datetime.now().year)
+    
+    for leave in st.session_state.leaves:
+        try:
+            year = datetime.strptime(leave['start_date'], '%Y-%m-%d').year
+            years.add(year)
+        except (ValueError, KeyError):
+            continue
+    
+    return sorted(list(years), reverse=True)
 
 def get_leave_balance(user_email: str) -> Dict:
     """Calculate leave balance for a user"""
-    user = st.session_state.users[user_email]
-    annual_remaining = user['annual_leave'] - user['used_annual']
-    sick_remaining = user['sick_leave'] - user['used_sick']
+    user = st.session_state.users.get(user_email.lower())
+    if not user:
+        return {"annual_total": 0, "annual_used": 0, "annual_remaining": 0,
+                "sick_total": 0, "sick_used": 0, "sick_remaining": 0}
+    
+    annual_remaining = user.get('annual_leave', 0) - user.get('used_annual', 0)
+    sick_remaining = user.get('sick_leave', 0) - user.get('used_sick', 0)
     
     return {
-        "annual_total": user['annual_leave'],
-        "annual_used": user['used_annual'],
+        "annual_total": user.get('annual_leave', 0),
+        "annual_used": user.get('used_annual', 0),
         "annual_remaining": annual_remaining,
-        "sick_total": user['sick_leave'],
-        "sick_used": user['used_sick'],
+        "sick_total": user.get('sick_leave', 0),
+        "sick_used": user.get('used_sick', 0),
         "sick_remaining": sick_remaining
     }
+
+# Import all your existing functions here (user_dashboard, apply_leave, admin_dashboard, etc.)
+# I'll include the main() function and a sample to show the structure
 
 def user_dashboard():
     """Display user dashboard with year filter"""
@@ -1713,7 +1600,7 @@ def settings_page():
                 <div style='margin: 15px 0;'>
                     <div style='font-size: 0.9rem; opacity: 0.9;'>Member Since</div>
                     <div style='font-size: 1.2rem; font-weight: bold;'>
-                        January 2022
+                        October 2025
                     </div>
                 </div>
             </div>
@@ -1730,7 +1617,7 @@ def settings_page():
 def main():
     """Main application logic"""
     
-    if not st.session_state.authenticated:
+    if not st.session_state.user:
         login_page()
     else:
         user = st.session_state.user
@@ -1775,10 +1662,11 @@ def main():
             st.markdown("<br><br>", unsafe_allow_html=True)
             
             if st.button("🚪 Logout", use_container_width=True):
-                st.session_state.authenticated = False
                 st.session_state.user = None
                 st.rerun()
         
+        # Add your page routing here
+
         if user['role'] == 'admin':
             if page == "📊 Dashboard":
                 admin_dashboard()
