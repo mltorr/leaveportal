@@ -1223,47 +1223,79 @@ def view_employees():
     st.markdown(f"#### Data for {selected_year}")
 
     employees_data = []
-    # Pre-filter leaves for the selected year for efficiency
-    leaves_in_year = [
-        l for l in st.session_state.leaves
-        if datetime.strptime(l['start_date'], '%Y-%m-%d').year == selected_year
-    ]
+    all_leaves_data = st.session_state.get('leaves', [])
+    users_data = st.session_state.get('users', {})
 
-    for email, user in st.session_state.users.items():
+    # Pre-filter leaves for the selected year for efficiency
+    leaves_in_year = []
+    for l in all_leaves_data:
+        start_date_str = l.get('start_date')
+        if isinstance(start_date_str, str):
+             try:
+                if datetime.strptime(start_date_str, '%Y-%m-%d').year == selected_year:
+                    leaves_in_year.append(l)
+             except ValueError:
+                 continue # Skip invalid date format
+
+    for email, user in users_data.items():
         # Filter leaves for the current user AND selected year
-        user_leaves_year = [l for l in leaves_in_year if l['user_email'] == email]
-        approved_user_leaves_year = [l for l in user_leaves_year if l['status'] == 'Approved']
+        user_leaves_year = [l for l in leaves_in_year if l.get('user_email') == email]
+        approved_user_leaves_year = [l for l in user_leaves_year if l.get('status') == 'Approved']
 
         # Calculate year-specific usage
-        year_specific_annual_used = sum(l['days'] for l in approved_user_leaves_year if l['leave_type'] == 'Annual Leave')
-        year_specific_sick_used = sum(l['days'] for l in approved_user_leaves_year if l['leave_type'] == 'Sick Leave')
+        year_specific_annual_used = sum(l.get('days', 0) for l in approved_user_leaves_year if l.get('leave_type') == 'Annual Leave')
+        year_specific_sick_used = sum(l.get('days', 0) for l in approved_user_leaves_year if l.get('leave_type') == 'Sick Leave')
+
+        # Use total allocated leave from the user profile (ensure it's an int, default to 0)
+        annual_allocated = int(user.get('annual_leave', 0))
+        sick_allocated = int(user.get('sick_leave', 0))
 
         # Calculate year-specific remaining balances
-        # Note: We use the total allocated leave from the user profile
-        year_specific_annual_remaining = user['annual_leave'] - year_specific_annual_used
-        year_specific_sick_remaining = user['sick_leave'] - year_specific_sick_used
+        year_specific_annual_remaining = annual_allocated - year_specific_annual_used
+        year_specific_sick_remaining = sick_allocated - year_specific_sick_used
 
         # Calculate year-specific request counts
         year_specific_total_requests = len(user_leaves_year)
-        year_specific_pending = len([l for l in user_leaves_year if l['status'] == 'Pending'])
+        year_specific_pending = len([l for l in user_leaves_year if l.get('status') == 'Pending'])
 
         employees_data.append({
-            "Name": user['name'],
+            "Name": user.get('name', 'N/A'),
             "Email": email,
-            "Department": user['department'],
-            "Position": user['position'],
-            # Show year-specific usage vs total allocated
+            "Department": user.get('department', 'N/A'),
+            "Position": user.get('position', 'N/A'),
             f"Annual Used ({selected_year})": year_specific_annual_used,
             f"Annual Remaining ({selected_year})": year_specific_annual_remaining,
-            "Annual Allocated": user['annual_leave'], # Keep total allocation visible
+            "Annual Allocated": annual_allocated,
             f"Sick Used ({selected_year})": year_specific_sick_used,
             f"Sick Remaining ({selected_year})": year_specific_sick_remaining,
-            "Sick Allocated": user['sick_leave'], # Keep total allocation visible
+            "Sick Allocated": sick_allocated,
             f"Total Requests ({selected_year})": year_specific_total_requests,
             f"Pending ({selected_year})": year_specific_pending
         })
 
     df = pd.DataFrame(employees_data)
+
+    # --- FIX: Convert max values to standard int ---
+    # Calculate max values safely, converting potential numpy types to int
+    # Use 1 as a fallback if the DataFrame is empty or max calculation fails
+    max_annual_allocated = 1
+    if not df.empty and "Annual Allocated" in df.columns:
+        try:
+             # Ensure the column exists and has values before calling max()
+             if not df["Annual Allocated"].empty:
+                 max_annual_allocated = int(max(df["Annual Allocated"].max(), 1)) # Convert here
+        except Exception: # Catch potential errors during max()
+             pass # Keep the default value of 1
+
+    max_sick_allocated = 1
+    if not df.empty and "Sick Allocated" in df.columns:
+         try:
+             if not df["Sick Allocated"].empty:
+                 max_sick_allocated = int(max(df["Sick Allocated"].max(), 1)) # Convert here
+         except Exception:
+             pass
+    # --- END FIX ---
+
 
     # Adjust dataframe display configuration for new columns
     st.dataframe(
@@ -1277,19 +1309,17 @@ def view_employees():
             "Position": st.column_config.TextColumn("Position", width="medium"),
              f"Annual Remaining ({selected_year})": st.column_config.ProgressColumn(
                 f"Annual Rem. ({selected_year})",
-                help=f"Remaining Annual Leave days for {selected_year}",
+                help=f"Remaining Annual Leave days for {selected_year} (based on total allocation)",
                 format="%d days",
                 min_value=0,
-                # Make max dynamic or use a reasonable upper bound like 30
-                max_value=max(df["Annual Allocated"].max(), 1),
+                max_value=max_annual_allocated, # Use converted int value
             ),
              f"Sick Remaining ({selected_year})": st.column_config.ProgressColumn(
                 f"Sick Rem. ({selected_year})",
-                help=f"Remaining Sick Leave days for {selected_year}",
+                help=f"Remaining Sick Leave days for {selected_year} (based on total allocation)",
                 format="%d days",
                 min_value=0,
-                 # Make max dynamic or use a reasonable upper bound like 20
-                max_value=max(df["Sick Allocated"].max(), 1),
+                max_value=max_sick_allocated, # Use converted int value
             ),
              f"Annual Used ({selected_year})": st.column_config.NumberColumn(f"Annual Used ({selected_year})", format="%d days"),
              f"Sick Used ({selected_year})": st.column_config.NumberColumn(f"Sick Used ({selected_year})", format="%d days"),
@@ -1305,8 +1335,8 @@ def view_employees():
 
     dept_data_year = {}
     # Iterate through users to ensure all departments are potentially included
-    for user in st.session_state.users.values():
-        dept = user['department']
+    for email, user in users_data.items():
+        dept = user.get('department', 'Unassigned')
         if dept not in dept_data_year:
             dept_data_year[dept] = {
                 'total_employees': 0, # Count employees in dept regardless of leave
@@ -1315,55 +1345,55 @@ def view_employees():
             }
         dept_data_year[dept]['total_employees'] += 1
 
-    # Aggregate year-specific leave usage by department
+    # Aggregate year-specific leave usage by department from approved leaves
     for leave in leaves_in_year:
-         if leave['status'] == 'Approved':
+         if leave.get('status') == 'Approved':
             user_email = leave.get('user_email')
-            if user_email and user_email in st.session_state.users:
-                dept = st.session_state.users[user_email]['department']
-                if dept in dept_data_year: # Check if dept exists (it should from above loop)
-                    if leave['leave_type'] == 'Annual Leave':
-                        dept_data_year[dept]['year_annual_used'] += leave['days']
-                    elif leave['leave_type'] == 'Sick Leave':
-                        dept_data_year[dept]['year_sick_used'] += leave['days']
-
+            if user_email and user_email in users_data:
+                dept = users_data[user_email].get('department', 'Unassigned')
+                if dept in dept_data_year:
+                    leave_days = leave.get('days', 0)
+                    if leave.get('leave_type') == 'Annual Leave':
+                        dept_data_year[dept]['year_annual_used'] += leave_days
+                    elif leave.get('leave_type') == 'Sick Leave':
+                        dept_data_year[dept]['year_sick_used'] += leave_days
 
     dept_df_list = []
     for dept, data in dept_data_year.items():
-        if data['total_employees'] > 0:
-            avg_annual = round(data['year_annual_used'] / data['total_employees'], 1)
-            avg_sick = round(data['year_sick_used'] / data['total_employees'], 1)
+        total_employees_in_dept = data.get('total_employees', 0)
+        if total_employees_in_dept > 0:
+            avg_annual = round(data.get('year_annual_used', 0) / total_employees_in_dept, 1)
+            avg_sick = round(data.get('year_sick_used', 0) / total_employees_in_dept, 1)
         else:
             avg_annual = 0
             avg_sick = 0
 
         dept_df_list.append({
             'Department': dept,
-            'Employees': data['total_employees'],
+            'Employees': total_employees_in_dept,
             f'Avg Annual Used ({selected_year})': avg_annual,
             f'Avg Sick Used ({selected_year})': avg_sick,
-            f'Total Leave Days ({selected_year})': data['year_annual_used'] + data['year_sick_used']
+            f'Total Leave Days ({selected_year})': data.get('year_annual_used', 0) + data.get('year_sick_used', 0)
         })
 
     dept_df_year = pd.DataFrame(dept_df_list)
 
     if not dept_df_year.empty:
+        # Filter out departments with 0 employees if desired before plotting
+        # dept_df_year = dept_df_year[dept_df_year['Employees'] > 0]
+
         fig_dept = px.bar(
             dept_df_year,
             x='Department',
             y=[f'Avg Annual Used ({selected_year})', f'Avg Sick Used ({selected_year})'],
             barmode='group',
             color_discrete_sequence=['#667eea', '#f093fb'],
-            labels={
-                "value": "Average Days Used per Employee",
-                "variable": "Leave Type"
-            }
+            labels={ "value": "Average Days Used per Employee", "variable": "Leave Type"},
+            title=f"Department Leave Usage Analysis for {selected_year}"
         )
         fig_dept.update_layout(
-            xaxis_title="Department",
-            yaxis_title="Average Days Used",
-            legend_title="Leave Type",
-            height=400
+            xaxis_title="Department", yaxis_title="Average Days Used",
+            legend_title="Leave Type", height=400, title_x=0.5
         )
         st.plotly_chart(fig_dept, use_container_width=True)
     else:
