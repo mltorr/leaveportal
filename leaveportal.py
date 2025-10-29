@@ -9,6 +9,8 @@ import msal
 import os
 import requests
 from pathlib import Path
+from datetime import datetime
+import calendar
 
 # Page configuration
 st.set_page_config(
@@ -889,68 +891,127 @@ def admin_dashboard():
         )
         st.markdown("<div style='margin-bottom: 30px;'></div>", unsafe_allow_html=True) # Match header margin-bottom
     # --- END YEAR FILTER ---
+    st.markdown("#### 📊 Employees Who Applied For Leave This Month")
+    now = datetime.now()
+    current_month = now.month
+    current_year = now.year
+    _, num_days = calendar.monthrange(current_year, current_month) # Get days in current month
+    month_start_date = datetime(current_year, current_month, 1).date()
+    month_end_date = datetime(current_year, current_month, num_days).date()
 
-    # Filter leaves based on selected year
-    year_leaves = [
-        l for l in st.session_state.leaves
-        if datetime.strptime(l['start_date'], '%Y-%m-%d').year == selected_year
-    ]
+    leaves_this_month = []
+    # Ensure leaves data exists in session state
+    all_leaves_data = st.session_state.get('leaves', [])
+    users_data = st.session_state.get('users', {})
 
-    pending_leaves = [l for l in year_leaves if l['status'] == 'Pending']
-    approved_leaves = [l for l in year_leaves if l['status'] == 'Approved']
-    rejected_leaves = [l for l in year_leaves if l['status'] == 'Rejected']
+    for leave in all_leaves_data:
+        # Check essential keys and status
+        if leave.get('status') in ['Approved', 'Pending'] and 'start_date' in leave and 'end_date' in leave:
+            try:
+                leave_start = datetime.strptime(leave['start_date'], '%Y-%m-%d').date()
+                leave_end = datetime.strptime(leave['end_date'], '%Y-%m-%d').date()
 
-    st.markdown(f"#### Overview for {selected_year}")
-    col1, col2, col3, col4 = st.columns(4)
+                # Check for overlap with the current month
+                if (leave_start <= month_end_date) and (leave_end >= month_start_date):
+                    user_email = leave.get('user_email')
+                    user_info = users_data.get(user_email)
+                    position = user_info.get('position', 'N/A') if user_info else 'N/A'
+
+                    leaves_this_month.append({
+                        "Name": leave.get('user_name', 'N/A'),
+                        "Position": position,
+                        "Leave Start": leave['start_date'],
+                        "Leave End": leave['end_date'],
+                        "Date Requested": leave.get('applied_date', 'N/A'),
+                        "Status": leave['status']
+                    })
+            except (ValueError, TypeError):
+                 # Skip leaves with invalid date format or type issues
+                continue
+
+    if leaves_this_month:
+        df_leaves_month = pd.DataFrame(leaves_this_month)
+        # Sort by leave start date for clarity
+        df_leaves_month = df_leaves_month.sort_values(by="Leave Start")
+        st.dataframe(
+            df_leaves_month,
+            use_container_width=True,
+            hide_index=True,
+             column_config={
+                 "Leave Start": st.column_config.DateColumn("Start Date", format="YYYY-MM-DD"),
+                 "Leave End": st.column_config.DateColumn("End Date", format="YYYY-MM-DD"),
+                 "Date Requested": st.column_config.DateColumn("Applied On", format="YYYY-MM-DD"),
+             }
+            )
+    else:
+        st.info(f"No employees found on leave for {now.strftime('%B %Y')}.") # Display current month/year
+
+    st.markdown("<hr style='margin-top: 20px; margin-bottom: 20px;'>", unsafe_allow_html=True)
+
+    # --- Yearly Overview Section ---
+    st.markdown("#### 📊 Yearly Overview")
+
+    # --- YEAR FILTER ---
+    available_years = get_leave_years()
+    default_year = 2025
+    try:
+        default_index = available_years.index(default_year)
+    except ValueError:
+        default_index = 0 # Default to the latest year if 2025 isn't available
+
+    # selected_year = st.selectbox(
+    #     "Select Year for Overview:",
+    #     options=available_years,
+    #     index=default_index,
+    #     key="admin_year_filter"
+    # )
+
+    # Filter leaves based on selected year, handling potential errors
+    year_leaves = []
+    for l in all_leaves_data:
+        start_date_str = l.get('start_date')
+        if isinstance(start_date_str, str):
+            try:
+                if datetime.strptime(start_date_str, '%Y-%m-%d').year == selected_year:
+                    year_leaves.append(l)
+            except ValueError:
+                continue # Skip leaves with invalid date format
+
+    pending_leaves = [l for l in year_leaves if l.get('status') == 'Pending']
+    approved_leaves = [l for l in year_leaves if l.get('status') == 'Approved']
+    rejected_leaves = [l for l in year_leaves if l.get('status') == 'Rejected']
 
     # --- Stat Cards (Using Year Filtered Data) ---
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"""
-            <div style='background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-                        padding: 20px; border-radius: 16px; color: white;'>
+            <div style='background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 20px; border-radius: 16px; color: white; height: 100%;'>
                 <div style='font-size: 0.9rem; opacity: 0.9;'>Total Requests ({selected_year})</div>
-                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>
-                    {len(year_leaves)}
-                </div>
+                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>{len(year_leaves)}</div>
                 <div style='font-size: 0.85rem; opacity: 0.8;'>in {selected_year}</div>
-            </div>
-        """, unsafe_allow_html=True)
-
+            </div>""", unsafe_allow_html=True)
     with col2:
         st.markdown(f"""
-            <div style='background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-                        padding: 20px; border-radius: 16px; color: white;'>
+            <div style='background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); padding: 20px; border-radius: 16px; color: white; height: 100%;'>
                 <div style='font-size: 0.9rem; opacity: 0.9;'>Pending Approval</div>
-                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>
-                    {len(pending_leaves)}
-                </div>
+                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>{len(pending_leaves)}</div>
                 <div style='font-size: 0.85rem; opacity: 0.8;'>needs action</div>
-            </div>
-        """, unsafe_allow_html=True)
-
+            </div>""", unsafe_allow_html=True)
     with col3:
         st.markdown(f"""
-            <div style='background: linear-gradient(135deg, #30cfd0 0%, #330867 100%);
-                        padding: 20px; border-radius: 16px; color: white;'>
+            <div style='background: linear-gradient(135deg, #30cfd0 0%, #330867 100%); padding: 20px; border-radius: 16px; color: white; height: 100%;'>
                 <div style='font-size: 0.9rem; opacity: 0.9;'>Approved</div>
-                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>
-                    {len(approved_leaves)}
-                </div>
+                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>{len(approved_leaves)}</div>
                  <div style='font-size: 0.85rem; opacity: 0.8;'>in {selected_year}</div>
-            </div>
-        """, unsafe_allow_html=True)
-
+            </div>""", unsafe_allow_html=True)
     with col4:
+        # Active Employees count is not year-specific
         st.markdown(f"""
-            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        padding: 20px; border-radius: 16px; color: white;'>
+            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 16px; color: white; height: 100%;'>
                 <div style='font-size: 0.9rem; opacity: 0.9;'>Active Employees</div>
-                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>
-                    {len(st.session_state.users)}
-                </div>
+                <div style='font-size: 2rem; font-weight: bold; margin: 10px 0;'>{len(users_data)}</div>
                 <div style='font-size: 0.85rem; opacity: 0.8;'>total users</div>
-            </div>
-        """, unsafe_allow_html=True)
+            </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -959,54 +1020,79 @@ def admin_dashboard():
 
     with col1_chart:
         st.markdown(f"##### 📊 Leave Types Distribution ({selected_year})")
-        if year_leaves:
-            leave_type_counts = pd.DataFrame(year_leaves)['leave_type'].value_counts()
-            fig_pie = px.pie(
-                values=leave_type_counts.values,
-                names=leave_type_counts.index,
-                color_discrete_sequence=px.colors.qualitative.Set3,
-                hole=0.4
-            )
-            fig_pie.update_layout(showlegend=True, height=300, margin=dict(t=0, b=0, l=0, r=0))
-            st.plotly_chart(fig_pie, use_container_width=True)
+        valid_leaves_for_pie = [l for l in year_leaves if 'leave_type' in l]
+        if valid_leaves_for_pie:
+            leave_type_counts = pd.DataFrame(valid_leaves_for_pie)['leave_type'].value_counts()
+            if not leave_type_counts.empty:
+                fig_pie = px.pie(
+                    values=leave_type_counts.values, names=leave_type_counts.index,
+                    color_discrete_sequence=px.colors.qualitative.Pastel, hole=0.4,
+                    title=f"Leave Types in {selected_year}"
+                )
+                fig_pie.update_layout(showlegend=True, height=350, margin=dict(t=40, b=10, l=10, r=10), title_x=0.5)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                 st.info(f"No valid leave type data found for {selected_year}.")
         else:
-            st.info(f"No leave data for {selected_year}.")
+            st.info(f"No leave data with leave types found for {selected_year}.")
 
     with col2_chart:
         st.markdown(f"##### 📈 Leave Status Overview ({selected_year})")
-        if year_leaves:
-            status_data = {
-                "Status": ["Pending", "Approved", "Rejected"],
-                "Count": [len(pending_leaves), len(approved_leaves), len(rejected_leaves)]
-            }
-            fig_bar = px.bar(
-                status_data, x="Status", y="Count", color="Status",
-                color_discrete_map={"Pending": "#f59e0b", "Approved": "#10b981", "Rejected": "#ef4444"}
-            )
-            fig_bar.update_layout(showlegend=False, height=300, margin=dict(t=0, b=0, l=0, r=0))
-            st.plotly_chart(fig_bar, use_container_width=True)
+        if year_leaves: # Check if there are any leaves for the year at all
+            status_data = {"Status": ["Pending", "Approved", "Rejected"],
+                           "Count": [len(pending_leaves), len(approved_leaves), len(rejected_leaves)]}
+            df_status = pd.DataFrame(status_data)
+            # Filter out statuses with zero count for a cleaner bar chart if desired
+            # df_status = df_status[df_status['Count'] > 0]
+
+            if not df_status.empty:
+                fig_bar = px.bar(
+                    df_status, x="Status", y="Count", color="Status",
+                    color_discrete_map={"Pending": "#f59e0b", "Approved": "#10b981", "Rejected": "#ef4444"},
+                    title=f"Leave Statuses in {selected_year}"
+                )
+                fig_bar.update_layout(showlegend=False, height=350, margin=dict(t=40, b=10, l=10, r=10), title_x=0.5)
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                 st.info(f"No leave status data to plot for {selected_year}.") # Should not happen if year_leaves is not empty
         else:
-            st.info(f"No leave data for {selected_year}.")
+            st.info(f"No leave data to plot status for {selected_year}.")
 
     st.markdown(f"##### 📅 Monthly Leave Trends ({selected_year})")
-    df_leaves_year = pd.DataFrame(year_leaves)
-    if not df_leaves_year.empty:
-        df_leaves_year['month_obj'] = pd.to_datetime(df_leaves_year['start_date'])
-        # Ensure we cover all months within the selected year
-        all_months_in_year = pd.date_range(start=f'{selected_year}-01-01', end=f'{selected_year}-12-31', freq='MS')
-        monthly_data = df_leaves_year.set_index('month_obj').resample('MS').size().reindex(all_months_in_year, fill_value=0).reset_index(name='count')
-        monthly_data['month'] = monthly_data['index'].dt.strftime('%Y-%m') # Format for display
+    # Prepare data for trend chart, ensuring dates are valid
+    valid_leaves_for_trend = []
+    for l in year_leaves:
+        start_date_str = l.get('start_date')
+        if isinstance(start_date_str, str):
+            try:
+                month_obj = pd.to_datetime(start_date_str)
+                l['month_obj'] = month_obj # Add parsed date object
+                valid_leaves_for_trend.append(l)
+            except (ValueError, TypeError):
+                continue # Skip invalid dates
+
+    df_valid_trends = pd.DataFrame(valid_leaves_for_trend)
+
+    if not df_valid_trends.empty:
+        # Create a full year's month range to ensure all months are shown
+        all_months_in_year = pd.date_range(start=f'{selected_year}-01-01', end=f'{selected_year}-12-31', freq='MS') # MS = Month Start
+        # Resample requires a datetime index
+        monthly_data = df_valid_trends.set_index('month_obj').resample('MS').size().reindex(all_months_in_year, fill_value=0).reset_index(name='count')
+        monthly_data['month'] = monthly_data['index'].dt.strftime('%Y-%m') # Format month for x-axis label
 
         fig_line = px.line(
-            monthly_data, x='month', y='count', markers=True, line_shape='spline'
+            monthly_data, x='month', y='count', markers=True, line_shape='spline',
+            title=f"Monthly Leave Requests in {selected_year}",
+            labels={'count': 'Number of Leaves'}
         )
-        fig_line.update_traces(line_color='#667eea', marker=dict(size=10))
+        fig_line.update_traces(line_color='#667eea', marker=dict(size=8))
         fig_line.update_layout(
-            xaxis_title="Month", yaxis_title="Number of Leaves", height=300, margin=dict(t=20, b=0, l=0, r=0)
+            xaxis_title="Month", yaxis_title="Number of Leaves", height=350,
+            margin=dict(t=40, b=10, l=10, r=10), title_x=0.5
         )
         st.plotly_chart(fig_line, use_container_width=True)
     else:
-        st.info(f"No leave trend data to display for {selected_year}.")
+        st.info(f"No valid leave data to display monthly trends for {selected_year}.")
 
 def manage_leaves():
     """Admin page to manage all leaves"""
