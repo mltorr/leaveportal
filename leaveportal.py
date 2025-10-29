@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import json
 from typing import Dict, List, Optional
 import msal
@@ -20,10 +20,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# client_id = os.getenv('AZURE_CLIENT_ID', 'd1d59622-2c66-40af-ac57-383e158b1024')
+# client_secret = os.getenv('AZURE_CLIENT_SECRET', 'mDr8Q~VFa9j3WacHOWT2nLkqbYMzL9XPn1plIa45')
+# tenant_id = os.getenv('AZURE_TENANT_ID', '7e7f561b-5006-4951-8708-a1cb200af831')
+# authority = f"https://login.microsoftonline.com/{tenant_id}"
+# redirect_uri = os.getenv('REDIRECT_URI', 'http://localhost:8501')
+
 # Azure AD app details
-client_id = os.getenv('AZURE_CLIENT_ID', 'yourid')
-client_secret = os.getenv('AZURE_CLIENT_SECRET', 'yoursecret')
-tenant_id = os.getenv('AZURE_TENANT_ID', 'yourtenant')
+client_id = os.getenv('AZURE_CLIENT_ID', 'e905ba89-2d3e-4f9e-af92-c8799ac6fa64')
+client_secret = os.getenv('AZURE_CLIENT_SECRET', 'yDO8Q~X26a4BvvQMzpgemIFzXSE~gY9J5_O.adox')
+tenant_id = os.getenv('AZURE_TENANT_ID', '7e7f561b-5006-4951-8708-a1cb200af831')
 authority = f"https://login.microsoftonline.com/{tenant_id}"
 redirect_uri = os.getenv('REDIRECT_URI', 'https://apps.btgi.com.au:8515')
 scope = ["User.Read"]
@@ -267,9 +273,79 @@ def load_leaves():
         save_leaves(DEFAULT_LEAVES)
         return DEFAULT_LEAVES.copy()
 
+import pandas as pd # Ensure pandas is imported
+from datetime import datetime, date # Ensure date is imported
+import json # Ensure json is imported
+
 def save_leaves(leaves_data):
-    with open(LEAVES_FILE, 'w') as f:
-        json.dump(leaves_data, f, indent=2)
+    """Save leaves to JSON file, ensuring dates are strings and removing temporary keys."""
+
+    cleaned_leaves_data = []
+    # Fields known to potentially hold datetime/Timestamp objects
+    date_fields = ['start_date', 'end_date', 'applied_date', 'reviewed_date']
+    # Temporary keys added by other functions that should NOT be saved
+    keys_to_remove = ['month_obj'] # <-- ADDED THIS LIST
+
+    for i, leave_record in enumerate(leaves_data):
+        cleaned_record = leave_record.copy() # Work on a copy
+
+        # --- 1. Remove temporary keys ---
+        for key in keys_to_remove:
+            if key in cleaned_record:
+                del cleaned_record[key] # Remove the key if it exists
+        # --- END REMOVE KEYS ---
+
+        # --- 2. Convert date fields to strings ---
+        for field in date_fields:
+            if field in cleaned_record and cleaned_record[field] is not None:
+                if isinstance(cleaned_record[field], (pd.Timestamp, datetime, date)):
+                    try:
+                        cleaned_record[field] = cleaned_record[field].strftime('%Y-%m-%d')
+                    except AttributeError:
+                         print(f"Warning: Could not format date field '{field}' for record index {i}. Value: {cleaned_record[field]}. Converting to string.")
+                         cleaned_record[field] = str(cleaned_record[field])
+                # Ensure basic types for JSON
+                elif not isinstance(cleaned_record[field], (str, int, float, bool, type(None))):
+                     print(f"Warning: Non-standard type found in field '{field}' for record index {i}. Value: {cleaned_record[field]} ({type(cleaned_record[field])}). Converting to string.")
+                     cleaned_record[field] = str(cleaned_record[field]) # Convert unknown types to string
+        # --- END DATE CONVERSION ---
+
+        cleaned_leaves_data.append(cleaned_record)
+
+    # --- DEBUGGING AND SAVING ---
+    print("\n--- DEBUG: Cleaned data structure attempting to save to leaves.json ---")
+    can_serialize = False
+    try:
+        # Attempt to dump to string first to catch serialization errors early
+        json_string = json.dumps(cleaned_leaves_data, indent=2)
+        print(json_string) # Print the cleaned JSON string
+        can_serialize = True
+    except TypeError as e:
+        print(f"ERROR: Cannot serialize cleaned data before saving: {e}")
+        # Optionally print the problematic structure
+        # import pprint
+        # pprint.pprint(cleaned_leaves_data)
+    print("------------------------------------------------------------\n")
+
+    if not can_serialize:
+        st.error("Internal Error: Cleaned data cannot be saved due to non-serializable content. Check terminal logs.")
+        return # Prevent attempting to write corrupted data
+
+    try:
+        with open(LEAVES_FILE, 'w') as f:
+            # Save the cleaned data using the already validated json_string or by dumping again
+            # json.dump(cleaned_leaves_data, f, indent=2) # Option 1: Dump again
+            f.write(json_string) # Option 2: Write the validated string
+
+        # Update session state ONLY after successful save
+        st.session_state.leaves = cleaned_leaves_data
+        print("DEBUG: leaves.json saved successfully and session state updated.") # Confirmation
+
+    except IOError as e:
+        st.error(f"Failed to save leaves.json due to IOError: {e}")
+    except Exception as e: # Catch any other unexpected errors during file write
+        st.error(f"An unexpected error occurred writing leaves.json: {e}")
+        print(f"\n--- ERROR: Unexpected error during file write for leaves.json: {e} ---")
 
 # Initialize data from JSON files
 if not st.session_state.users:
@@ -663,70 +739,100 @@ def user_dashboard():
         st.info(f"No leave requests found for {selected_year}.")
 
 def apply_leave():
-    """Leave application form"""
+    """Leave application form with duplicate check"""
     st.markdown("### ✍️ Leave Application Form")
-    
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         st.markdown("""
             <div style='background: white; padding: 13px; border-radius: 16px;'>
         """, unsafe_allow_html=True)
-        
+
         leave_type = st.selectbox(
             "Leave Type",
             ["Annual Leave", "Sick Leave", "Casual Leave", "Maternity/Paternity Leave", "Unpaid Leave"]
         )
-        
+
         col_start, col_end = st.columns(2)
         with col_start:
-            start_date = st.date_input("Start Date", min_value=datetime.now().date())
+            # Keep these as date objects for now for validation
+            start_date_obj = st.date_input("Start Date", min_value=datetime.now().date())
         with col_end:
-            end_date = st.date_input("End Date", min_value=start_date)
-        
-        days = (end_date - start_date).days + 1
+            # Keep these as date objects for now for validation
+            end_date_obj = st.date_input("End Date", min_value=start_date_obj)
+
+        days = (end_date_obj - start_date_obj).days + 1
         st.info(f"📊 Total days: **{days}**")
-        
+
         reason = st.text_area("Reason for Leave", height=100)
-        
+
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
-        
+
+        # --- SUBMIT BUTTON LOGIC ---
         if st.button("🚀 Submit Leave Request", use_container_width=True):
-            if reason.strip():
-                # Get next ID
-                max_id = max([l['id'] for l in st.session_state.leaves], default=0)
-                
-                new_leave = {
-                    "id": max_id + 1,
-                    "user_email": st.session_state.user['email'],
-                    "user_name": st.session_state.user['name'],
-                    "leave_type": leave_type,
-                    "start_date": start_date.strftime("%Y-%m-%d"),
-                    "end_date": end_date.strftime("%Y-%m-%d"),
-                    "days": days,
-                    "reason": reason,
-                    "status": "Pending",
-                    "applied_date": datetime.now().strftime("%Y-%m-%d"),
-                    "reviewed_by": None,
-                    "reviewed_date": None
-                }
-                st.session_state.leaves.append(new_leave)
-                save_leaves(st.session_state.leaves)
-                st.success("✅ Leave request submitted successfully!")
-                st.rerun()
-            else:
+            if not reason.strip():
                 st.error("Please provide a reason for your leave.")
-    
+            else:
+                # --- START DUPLICATE CHECK ---
+                is_duplicate = False
+                current_user_email = st.session_state.user['email']
+                proposed_start_str = start_date_obj.strftime("%Y-%m-%d")
+                proposed_end_str = end_date_obj.strftime("%Y-%m-%d")
+
+                for existing_leave in st.session_state.leaves:
+                    # Check if the leave is for the same user and dates
+                    if (existing_leave.get('user_email') == current_user_email and
+                        existing_leave.get('start_date') == proposed_start_str and
+                        existing_leave.get('end_date') == proposed_end_str):
+
+                        # Optionally, ignore checking against 'Rejected' leaves
+                        # if existing_leave.get('status') != 'Rejected':
+                        is_duplicate = True
+                        break # Found a duplicate, no need to check further
+
+                if is_duplicate:
+                    st.error(f"❌ Duplicate Request: You have already requested leave for the period {proposed_start_str} to {proposed_end_str}.")
+                # --- END DUPLICATE CHECK ---
+                else:
+                    # --- If NOT duplicate, proceed to save ---
+                    max_id = max([l.get('id', 0) for l in st.session_state.leaves], default=0)
+
+                    new_leave = {
+                        "id": max_id + 1,
+                        "user_email": current_user_email,
+                        "user_name": st.session_state.user['name'],
+                        "leave_type": leave_type,
+                        "start_date": proposed_start_str, # Use the string version
+                        "end_date": proposed_end_str,   # Use the string version
+                        "days": days,
+                        "reason": reason,
+                        "status": "Pending",
+                        "applied_date": datetime.now().strftime("%Y-%m-%d"),
+                        "reviewed_by": None,
+                        "reviewed_date": None
+                    }
+                    st.session_state.leaves.append(new_leave)
+                    save_leaves(st.session_state.leaves)
+                    st.success("✅ Leave request submitted successfully!")
+                    # Use st.experimental_rerun() or st.rerun() depending on your Streamlit version
+                    try:
+                       st.rerun() # Preferred for newer versions
+                    except AttributeError:
+                       st.experimental_rerun() # Fallback for older versions
+
+
+    # --- Leave Balance Display (col2 remains the same) ---
     with col2:
         balance = get_leave_balance(st.session_state.user['email'])
-        
+        # ... (rest of the balance display code) ...
         st.markdown("""
-            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                         padding: 20px; border-radius: 16px; color: white;'>
                 <h4 style='color: white; margin-top: 0;'>📊 Leave Balance</h4>
         """, unsafe_allow_html=True)
-        
+
         st.markdown(f"""
                 <div style='margin: 15px 0;'>
                     <div style='font-size: 0.9rem; opacity: 0.9;'>Annual Leave</div>
@@ -778,7 +884,7 @@ def admin_dashboard():
         )
         st.markdown("<div style='margin-bottom: 30px;'></div>", unsafe_allow_html=True) # Match header margin-bottom
     # --- END YEAR FILTER ---
-    st.markdown("#### 📊 Employees Who Applied For Leave This Month")
+    st.markdown("#### 📊 Employees On-Leave This Month")
     now = datetime.now()
     current_month = now.month
     current_year = now.year
@@ -945,20 +1051,26 @@ def admin_dashboard():
         else:
             st.info(f"No leave data to plot status for {selected_year}.")
 
+# --- Inside admin_dashboard function ---
+
     st.markdown(f"##### 📅 Monthly Leave Trends ({selected_year})")
-    # Prepare data for trend chart, ensuring dates are valid
-    valid_leaves_for_trend = []
-    for l in year_leaves:
+    
+    # --- FIX: Create a separate list for trend calculation ---
+    trend_data = [] 
+    for l in year_leaves: # Use the already filtered year_leaves
         start_date_str = l.get('start_date')
         if isinstance(start_date_str, str):
             try:
-                month_obj = pd.to_datetime(start_date_str)
-                l['month_obj'] = month_obj # Add parsed date object
-                valid_leaves_for_trend.append(l)
+                # Convert date string to datetime object for processing
+                date_obj = pd.to_datetime(start_date_str) 
+                # Append a *new* dictionary with the date object to trend_data
+                trend_data.append({'month_obj': date_obj}) 
             except (ValueError, TypeError):
                 continue # Skip invalid dates
-
-    df_valid_trends = pd.DataFrame(valid_leaves_for_trend)
+    # --- END FIX ---
+                
+    # Now use trend_data to create df_valid_trends
+    df_valid_trends = pd.DataFrame(trend_data) 
 
     if not df_valid_trends.empty:
         # Create a full year's month range to ensure all months are shown
@@ -980,6 +1092,8 @@ def admin_dashboard():
         st.plotly_chart(fig_line, use_container_width=True)
     else:
         st.info(f"No valid leave data to display monthly trends for {selected_year}.")
+
+# --- End of admin_dashboard function ---
 
 def manage_leaves():
     """Admin page to manage all leaves"""
@@ -1043,39 +1157,110 @@ def manage_leaves():
                 </div>
             """, unsafe_allow_html=True)
             
+# --- Inside manage_leaves function, within the loop for each leave ---
+
             if leave['status'] == 'Pending':
-                col1, col2, col3 = st.columns([1, 1, 4])
-                with col1:
+                col1_btn, col2_btn, col_spacer = st.columns([1, 1, 4]) # Renamed col variables for clarity
+
+                with col1_btn:
                     if st.button(f"✅ Approve", key=f"approve_{leave['id']}"):
-                        for l in st.session_state.leaves:
-                            if l['id'] == leave['id']:
-                                l['status'] = 'Approved'
-                                l['reviewed_by'] = st.session_state.user['name']
-                                l['reviewed_date'] = datetime.now().strftime("%Y-%m-%d")
-                                
-                                user_email = l['user_email']
-                                if l['leave_type'] == 'Annual Leave':
-                                    st.session_state.users[user_email]['used_annual'] += l['days']
-                                elif l['leave_type'] == 'Sick Leave':
-                                    st.session_state.users[user_email]['used_sick'] += l['days']
-                                
+                        leave_updated = False
+                        user_updated = False
+                        error_occurred = False
+
+                        # Find the specific leave record in the session state list
+                        for index, l_record in enumerate(st.session_state.leaves):
+                            if l_record.get('id') == leave['id']:
+                                # --- 1. Update the leave record ---
+                                l_record['status'] = 'Approved'
+                                l_record['reviewed_by'] = st.session_state.user.get('name', 'Unknown Admin') # Safer access
+                                l_record['reviewed_date'] = datetime.now().strftime("%Y-%m-%d")
+                                leave_updated = True
+                                print(f"DEBUG: Updated leave record in session state (id: {leave['id']})") # Debug print
+
+                                # --- 2. Update the corresponding user's balance ---
+                                user_email = l_record.get('user_email')
+                                leave_days = l_record.get('days', 0) # Default to 0 days if missing
+
+                                if user_email and user_email in st.session_state.users:
+                                    user_to_update = st.session_state.users[user_email]
+                                    leave_type = l_record.get('leave_type')
+
+                                    try: # Add try-except for robust calculation
+                                        if leave_type == 'Annual Leave':
+                                            current_used = int(user_to_update.get('used_annual', 0))
+                                            user_to_update['used_annual'] = current_used + int(leave_days)
+                                            user_updated = True
+                                        elif leave_type == 'Sick Leave':
+                                            current_used = int(user_to_update.get('used_sick', 0))
+                                            user_to_update['used_sick'] = current_used + int(leave_days)
+                                            user_updated = True
+                                        else:
+                                             # Handle other leave types if they affect balances
+                                             pass
+                                             
+                                        if user_updated:
+                                             print(f"DEBUG: Updated user balance for {user_email}") # Debug print
+                                             
+                                    except (ValueError, TypeError) as e:
+                                        st.error(f"Error calculating leave balance for {user_email}: {e}")
+                                        error_occurred = True
+
+                                else:
+                                    st.error(f"Error updating leave balance: User '{user_email}' not found.")
+                                    error_occurred = True
+
+                                break # Exit loop after finding and processing the leave
+
+                        # --- 3. Save files ONLY if updates were successful ---
+                        if leave_updated and user_updated and not error_occurred:
+                            try:
+                                print("DEBUG: Attempting to save leaves...") # Debug print
+                                save_leaves(st.session_state.leaves) # Save updated leaves list
+                                print("DEBUG: Attempting to save users...") # Debug print
+                                save_users(st.session_state.users)   # Save updated users dictionary
+                                st.success(f"Leave request ID {leave['id']} approved successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"An error occurred during saving: {e}")
+                                # Optionally attempt to revert changes in session state if save fails? (More complex)
+                        elif leave_updated and not user_updated and not error_occurred:
+                             # Case where leave type didn't affect balance (e.g., Unpaid)
+                             try:
+                                print("DEBUG: Saving leaves (user balance not affected)...") # Debug print
                                 save_leaves(st.session_state.leaves)
-                                save_users(st.session_state.users)
-                                break
-                        st.success(f"Leave request approved!")
-                        st.rerun()
-                
-                with col2:
+                                st.success(f"Leave request ID {leave['id']} approved successfully! (User balance unaffected)")
+                                st.rerun()
+                             except Exception as e:
+                                st.error(f"An error occurred during saving leaves: {e}")
+                        elif not leave_updated:
+                            st.error(f"Error: Could not find leave request ID {leave['id']} to approve.")
+                        # Else: An error occurred during user update, error message already shown. Do not save.
+
+
+                with col2_btn:
+                    # --- Reject Button Logic (ensure reviewed_date uses strftime) ---
                     if st.button(f"❌ Reject", key=f"reject_{leave['id']}"):
-                        for l in st.session_state.leaves:
-                            if l['id'] == leave['id']:
-                                l['status'] = 'Rejected'
-                                l['reviewed_by'] = st.session_state.user['name']
-                                l['reviewed_date'] = datetime.now().strftime("%Y-%m-%d")
-                                save_leaves(st.session_state.leaves)
+                        leave_rejected = False
+                        for index, l_record in enumerate(st.session_state.leaves):
+                             if l_record.get('id') == leave['id']:
+                                l_record['status'] = 'Rejected'
+                                l_record['reviewed_by'] = st.session_state.user.get('name', 'Unknown Admin')
+                                l_record['reviewed_date'] = datetime.now().strftime("%Y-%m-%d") # Ensure strftime here too
+                                leave_rejected = True
+                                print(f"DEBUG: Updated leave record to Rejected in session state (id: {leave['id']})") # Debug print
                                 break
-                        st.warning(f"Leave request rejected.")
-                        st.rerun()
+
+                        if leave_rejected:
+                            try:
+                                print("DEBUG: Attempting to save rejected leave...") # Debug print
+                                save_leaves(st.session_state.leaves) # Only save leaves, user balance not affected
+                                st.warning(f"Leave request ID {leave['id']} rejected.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"An error occurred during saving rejection: {e}")
+                        else:
+                             st.error(f"Error: Could not find leave request ID {leave['id']} to reject.")
             
             elif leave['status'] in ['Approved', 'Rejected']:
                 st.markdown(f"""
@@ -1310,7 +1495,7 @@ def manage_users():
             col_dept, col_pos = st.columns(2)
             with col_dept:
                 departments = ["Directors", "Business Heads", "Managers", "Consulting", "HR", "Sales", 
-                              "Intelligence", "Recovery", "Transformation", "Data Team", "Bisaya (9th Floor)"]
+                              "Intelligence", "Recovery", "Transformation", "Data Team", "Peakledger"]
                 new_department = st.selectbox("Department*", departments, key="add_dept")
             with col_pos:
                 new_position = st.text_input("Position*", key="add_pos")
@@ -1392,7 +1577,7 @@ def manage_users():
                 col_dept, col_pos = st.columns(2)
                 with col_dept:
                     departments = ["Directors", "Business Heads", "Managers", "Consulting", "HR", "Sales", 
-                                  "Intelligence", "Recovery", "Transformation", "Data Team", "Bisaya (9th Floor)"]
+                                  "Intelligence", "Recovery", "Transformation", "Data Team", "Peakledger"]
                     current_dept = selected_user['department'] if selected_user['department'] in departments else "Data Team"
                     edit_department = st.selectbox("Department*", departments, index=departments.index(current_dept), key="edit_dept")
                 with col_pos:
@@ -1570,7 +1755,7 @@ def settings_page():
         col_dept, col_pos = st.columns(2)
         with col_dept:
             departments = ["Directors", "Business Heads", "Managers", "Consulting", "HR", "Sales", 
-                          "Intelligence", "Recovery", "Transformation", "Data Team", "Bisaya (9th Floor)"]
+                          "Intelligence", "Recovery", "Transformation", "Data Team", "Peakledger"]
             current_dept = user['department'] if user['department'] in departments else "Data Team"
             department = st.selectbox("Department", departments, index=departments.index(current_dept))
         with col_pos:
