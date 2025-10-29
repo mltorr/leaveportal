@@ -1722,10 +1722,10 @@ def settings_page():
         st.markdown("<br>", unsafe_allow_html=True)
         
         # FIXED CODE
-        if st.button("🚪 Logout", use_container_width=True, type="secondary", key="settings_logout"):
-            st.session_state.authenticated = False
-            st.session_state.user = None
-            st.rerun()
+        # if st.button("🚪 Logout", use_container_width=True, type="secondary", key="settings_logout"):
+        #     st.session_state.authenticated = False
+        #     st.session_state.user = None
+        #     st.rerun()
 
 def main():
     """Main application logic"""
