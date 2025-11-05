@@ -2,15 +2,17 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta, date
+from datetime import datetime, date, timedelta
 import json
 from typing import Dict, List, Optional
 import msal
+import io
 import os
 import requests
 from pathlib import Path
 import calendar
 import random
+import math
 
 # Page configuration
 st.set_page_config(
@@ -20,6 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# If you want to test locally, use this:
 # client_id = os.getenv('AZURE_CLIENT_ID', 'd1d59622-2c66-40af-ac57-383e158b1024')
 # client_secret = os.getenv('AZURE_CLIENT_SECRET', 'mDr8Q~VFa9j3WacHOWT2nLkqbYMzL9XPn1plIa45')
 # tenant_id = os.getenv('AZURE_TENANT_ID', '7e7f561b-5006-4951-8708-a1cb200af831')
@@ -273,9 +276,162 @@ def load_leaves():
         save_leaves(DEFAULT_LEAVES)
         return DEFAULT_LEAVES.copy()
 
-import pandas as pd # Ensure pandas is imported
-from datetime import datetime, date # Ensure date is imported
-import json # Ensure json is imported
+@st.cache_data
+def to_excel(df):
+    """Converts a DataFrame to an Excel file in memory."""
+    output = io.BytesIO()
+    # Use st.cache_data's ability to hash arguments by value,
+    # but we need to convert df to a hashable type first, like its string representation.
+    # A simpler way (though less efficient if df is huge) is to just let st.cache_data hash it.
+    # For this use case, it's fine.
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='EmployeeLeaveOverview')
+    processed_data = output.getvalue()
+    return processed_data
+
+def get_leave_days_for_month(user_leaves_year, selected_year, selected_month_num):
+    """
+    Calculates the specific days (as a string) a user is on leave
+    for a given month and year.
+    """
+    if selected_month_num == 0: # 0 represents "All Months"
+        return "N/A"
+
+    try:
+        # Get the total number of days in the selected month
+        _, num_days_in_month = calendar.monthrange(selected_year, selected_month_num)
+        # Define the start and end date objects for the selected month
+        month_start = date(selected_year, selected_month_num, 1)
+        month_end = date(selected_year, selected_month_num, num_days_in_month)
+    except ValueError:
+        return "N/A" # Handle invalid dates, e.g., leap year issues (though unlikely here)
+
+    days_on_leave_set = set()
+
+    # Iterate through all leaves the user has filed for the entire year
+    for leave in user_leaves_year:
+        # Only count 'Approved' or 'Pending' leaves for this calculation
+        if leave.get('status') in ['Approved', 'Pending']:
+            try:
+                # Convert leave start/end strings to date objects
+                leave_start = datetime.strptime(leave['start_date'], '%Y-%m-%d').date()
+                leave_end = datetime.strptime(leave['end_date'], '%Y-%m-%d').date()
+
+                # --- Check for overlap ---
+                # The leave period overlaps if the leave starts before/on the month's end
+                # AND the leave ends on/after the month's start.
+                if (leave_start <= month_end) and (leave_end >= month_start):
+                    
+                    # Find the *actual* start and end of the leave *within* this month
+                    actual_start_date = max(leave_start, month_start)
+                    actual_end_date = min(leave_end, month_end)
+                    
+                    # Collect all the day numbers within this intersection
+                    current_day = actual_start_date
+                    while current_day <= actual_end_date:
+                        days_on_leave_set.add(current_day.day)
+                        current_day += timedelta(days=1)
+            
+            except (ValueError, TypeError):
+                continue # Skip any malformed leave records
+
+    if not days_on_leave_set:
+        return "" # Return an empty string if no leave days were found
+
+    # Return a comma-separated string of the sorted days
+    return ", ".join(str(day) for day in sorted(list(days_on_leave_set)))
+
+# Eto Rein yung Webhook, di ko na nilagay sa .env yung hook and other vars since dev pa lang naman. Asa manage leaves and leave application yung nagtritrigger.
+
+def send_teams_notification(leave_data, is_update=False):
+    """
+    Sends a notification to a Teams channel using an Incoming Webhook.
+    Can post a "new request" or an "update" (Approved/Rejected).
+    """
+    print(f"DEBUG: Attempting to send Teams notification (Update: {is_update})...")
+    
+    webhook_url = "https://btginternational666.webhook.office.com/webhookb2/8598f0fc-0816-4a6d-b0a0-7c8e7f4ce5cd@7e7f561b-5006-4951-8708-a1cb200af831/IncomingWebhook/42cecf1dbf28477d8dae673a32338ea5/beceb1c4-88ba-4501-8c9a-5776cf4987d2/V2D-DSDuZDUnuaCzY_4qN6PkmVD2DxuSFxxilWGg47Dx01"
+    
+    if not webhook_url:
+        print("ERROR: TEAMS_WEBHOOK_URL environment variable not set. Skipping notification.")
+        # Only show a warning if it's a new leave; updates are less critical
+        if not is_update:
+            st.warning("Leave request saved, but admin notification (Teams) is not configured.")
+        return
+
+    # Get details from the leave request
+    user_name = leave_data.get('user_name', 'N/A')
+    start_date = leave_data.get('start_date', 'N/A')
+    end_date = leave_data.get('end_date', 'N/A')
+    leave_type = leave_data.get('leave_type', 'N/A')
+    days = leave_data.get('days', 0)
+    app_url = redirect_uri # Your app's main URL
+
+    # --- NEW LOGIC: Customize card based on update status ---
+    if is_update:
+        status = leave_data.get('status', 'Updated')
+        reviewed_by = leave_data.get('reviewed_by', 'Admin')
+        
+        # Set color: Green for Approved, Red for Rejected
+        theme_color = "10b981" if status == "Approved" else "ef4444"
+        title = f"Leave Request {status}: {user_name}"
+        facts = [
+            {"name": "Employee:", "value": user_name},
+            {"name": "Dates:", "value": f"{start_date} to {end_date} ({days} days)"},
+            {"name": "Status:", "value": f"**{status}**"},
+            {"name": "Reviewed By:", "value": reviewed_by}
+        ]
+        success_message = f"✅ Leave request {status.lower()}! The admin channel has been notified."
+        
+    else: # This is for a new, pending request
+        reason = leave_data.get('reason', 'No reason provided')
+        theme_color = "6366f1" # Your primary purple color
+        title = f"New Leave Request: {user_name}"
+        facts = [
+            {"name": "Employee:", "value": user_name},
+            {"name": "Dates:", "value": f"{start_date} to {end_date} ({days} days)"},
+            {"name": "Reason:", "value": reason}
+        ]
+        success_message = "✅ Leave request submitted! A notification has been sent to the admin channel."
+    # --- END NEW LOGIC ---
+
+    # 2. Construct the Teams "MessageCard" payload
+    payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": theme_color,
+        "summary": title,
+        "sections": [{
+            "activityTitle": title,
+            "activitySubtitle": f"{days} day(s) - {leave_type}",
+            "facts": facts,
+            "markdown": True
+        }],
+        "potentialAction": [{
+            "@type": "OpenUri",
+            "name": "Open Leave Portal",
+            "targets": [{"os": "default", "uri": app_url}]
+        }]
+    }
+
+    # 3. Send the request
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        
+        if response.status_code == 200 or response.text.lower() == "1" or response.text.lower() == "ok":
+            print(f"DEBUG: Teams notification sent successfully ({title}).")
+            # Only show the success message for new requests
+            if not is_update:
+                st.success(success_message)
+        else:
+            print(f"ERROR: Failed to send Teams notification. Status: {response.status_code}, Response: {response.text}")
+            if not is_update:
+                st.warning(f"Leave request saved, but failed to send notification to Teams (Error {response.status_code}).")
+    
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: Exception during Teams notification: {e}")
+        if not is_update:
+            st.warning(f"Leave request saved, but an error occurred sending the Teams notification: {e}")
 
 def save_leaves(leaves_data):
     """Save leaves to JSON file, ensuring dates are strings and removing temporary keys."""
@@ -585,13 +741,83 @@ def get_leave_balance(user_email: str) -> Dict:
 # Import all your existing functions here (user_dashboard, apply_leave, admin_dashboard, etc.)
 # I'll include the main() function and a sample to show the structure
 
+def process_monthly_leaves(user_leaves_year, selected_year, month_num):
+    """
+    Processes all leaves for a user for a specific month and returns aggregated data.
+    """
+    try:
+        _, num_days_in_month = calendar.monthrange(selected_year, month_num)
+        month_start = date(selected_year, month_num, 1)
+        month_end = date(selected_year, month_num, num_days_in_month)
+    except ValueError:
+        return { # Return empty data for invalid dates
+            "days_set": set(), "total_days": 0, "types": set(),
+            "statuses": set(), "reviewers": set(),
+            "approved_annual_days": 0, "approved_sick_days": 0
+        }
+
+    days_on_leave_set = set()
+    leave_types_set = set()
+    statuses_set = set()
+    reviewers_set = set()
+    approved_annual = 0
+    approved_sick = 0
+
+    # Iterate through all leaves the user has filed for the entire year
+    for leave in user_leaves_year:
+        # Only count 'Approved' or 'Pending' leaves
+        if leave.get('status') in ['Approved', 'Pending']:
+            try:
+                leave_start = datetime.strptime(leave['start_date'], '%Y-%m-%d').date()
+                leave_end = datetime.strptime(leave['end_date'], '%Y-%m-%d').date()
+
+                # Check if the leave period overlaps with the current month
+                if (leave_start <= month_end) and (leave_end >= month_start):
+                    
+                    # This leave is active in this month, so record its details
+                    leave_types_set.add(leave.get('leave_type', 'N/A'))
+                    statuses_set.add(leave.get('status', 'N/A'))
+                    reviewer = leave.get('reviewed_by')
+                    if reviewer: # Only add if a reviewer is listed
+                        reviewers_set.add(reviewer)
+
+                    # Find the *actual* start and end of the leave *within* this month
+                    actual_start_date = max(leave_start, month_start)
+                    actual_end_date = min(leave_end, month_end)
+                    
+                    # Collect all the day numbers and count them
+                    current_day = actual_start_date
+                    while current_day <= actual_end_date:
+                        days_on_leave_set.add(current_day.day)
+                        
+                        # Count approved days for balance
+                        if leave.get('status') == 'Approved':
+                            if leave.get('leave_type') == 'Annual Leave':
+                                approved_annual += 1
+                            elif leave.get('leave_type') == 'Sick Leave':
+                                approved_sick += 1
+                                
+                        current_day += timedelta(days=1)
+            
+            except (ValueError, TypeError):
+                continue # Skip any malformed leave records
+
+    return {
+        "days_set": days_on_leave_set,
+        "total_days": len(days_on_leave_set),
+        "types": leave_types_set,
+        "statuses": statuses_set,
+        "reviewers": reviewers_set,
+        "approved_annual_days": approved_annual,
+        "approved_sick_days": approved_sick
+    }
+
 def user_dashboard():
-    """Display user dashboard with year filter"""
+    """Display user dashboard with year filter, stats, recent leaves, and monthly summary."""
     user = st.session_state.user
 
     # --- YEAR FILTER (Placed beside the welcome message) ---
     available_years = get_leave_years()
-    # Find index for default year 2025, or use the latest year
     default_year = 2025
     try:
         default_index = available_years.index(default_year)
@@ -623,9 +849,9 @@ def user_dashboard():
     # --- END YEAR FILTER ---
 
 
-    # --- Leave Balance (Still overall, not year-specific unless requirements change) ---
+    # --- Leave Balance (Overall) ---
     balance = get_leave_balance(user['email'])
-    st.markdown(f"#### Leave Balance Overview (Overall)") # Clarify it's overall balance
+    st.markdown(f"#### Leave Balance Overview (Overall)")
     col1_bal, col2_bal = st.columns(2)
     with col1_bal:
          st.markdown(f"""
@@ -654,20 +880,31 @@ def user_dashboard():
             </div>
         """, unsafe_allow_html=True)
 
+    # --- Filter user's leaves that *overlap* with the selected year ---
+    user_leaves_all = [l for l in st.session_state.leaves if l.get('user_email') == user['email']]
+    user_leaves_year = []
+    for l in user_leaves_all:
+        try:
+            # Check if leave *starts* OR *ends* in the selected year
+            start_year = datetime.strptime(l['start_date'], '%Y-%m-%d').year
+            end_year = datetime.strptime(l['end_date'], '%Y-%m-%d').year
+            if start_year == selected_year or end_year == selected_year:
+                user_leaves_year.append(l)
+        except (ValueError, TypeError, KeyError):
+            continue # Skip leaves with bad/missing dates
+    # --- END YEAR FILTER ---
 
-    # --- Filter user's leaves for the selected year ---
-    user_leaves_all = [l for l in st.session_state.leaves if l['user_email'] == user['email']]
-    user_leaves_year = [
-        l for l in user_leaves_all
-        if datetime.strptime(l['start_date'], '%Y-%m-%d').year == selected_year
-    ]
 
     # --- Stats for the selected year ---
     st.markdown(f"#### Your Stats for {selected_year}")
     col1_stats, col2_stats = st.columns(2)
 
     with col1_stats:
-        pending_count_year = len([l for l in user_leaves_year if l['status'] == 'Pending'])
+        # Count pending leaves that start in the selected year
+        pending_count_year = len([
+            l for l in user_leaves_year 
+            if l.get('status') == 'Pending' and datetime.strptime(l['start_date'], '%Y-%m-%d').year == selected_year
+        ])
         st.markdown(f"""
             <div style='background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
                         padding: 20px; border-radius: 16px; color: white;'>
@@ -682,7 +919,11 @@ def user_dashboard():
         """, unsafe_allow_html=True)
 
     with col2_stats:
-        total_leaves_year = len(user_leaves_year)
+        # Count total requests that start in the selected year
+        total_leaves_year = len([
+            l for l in user_leaves_year
+            if datetime.strptime(l['start_date'], '%Y-%m-%d').year == selected_year
+        ])
         st.markdown(f"""
             <div style='background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
                         padding: 20px; border-radius: 16px; color: white;'>
@@ -696,19 +937,24 @@ def user_dashboard():
             </div>
         """, unsafe_allow_html=True)
 
+    # --- Recent Leave Requests (Unchanged) ---
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"### 📋 Your Recent Leave Requests ({selected_year})")
+    
+    # Filter for recent requests *started* in the selected year for this view
+    recent_leaves = [
+        l for l in user_leaves_year 
+        if datetime.strptime(l['start_date'], '%Y-%m-%d').year == selected_year
+    ]
 
-    if user_leaves_year:
-        # Sort year-specific leaves
-        df_year = pd.DataFrame(user_leaves_year)
+    if recent_leaves:
+        df_year = pd.DataFrame(recent_leaves)
         df_year = df_year.sort_values('applied_date', ascending=False)
-
-        # Display top 5 from the selected year
+        
         for _, leave in df_year.head(5).iterrows():
             status_color = {
                 "Approved": "#10b981", "Rejected": "#ef4444", "Pending": "#f59e0b"
-            }[leave['status']]
+            }.get(leave['status'], "#64748b")
 
             st.markdown(f"""
                 <div style='background: white; padding: 20px; border-radius: 12px;
@@ -717,26 +963,132 @@ def user_dashboard():
                     <div style='display: flex; justify-content: space-between; align-items: center;'>
                         <div>
                             <div style='font-weight: 600; font-size: 1.1rem; color: #1e293b;'>
-                                {leave['leave_type']}
+                                {leave.get('leave_type', 'N/A')}
                             </div>
                             <div style='color: #64748b; margin-top: 5px;'>
-                                📅 {leave['start_date']} to {leave['end_date']} ({leave['days']} days)
+                                📅 {leave.get('start_date', 'N/A')} to {leave.get('end_date', 'N/A')} ({leave.get('days', 0)} days)
                             </div>
                             <div style='color: #64748b; margin-top: 5px;'>
-                                💬 {leave['reason']}
+                                💬 {leave.get('reason', 'N/A')}
                             </div>
                         </div>
                         <div>
                             <span style='background: {status_color}; color: white;
                                         padding: 8px 16px; border-radius: 20px; font-weight: 600;'>
-                                {leave['status']}
+                                {leave.get('status', 'N/A')}
                             </span>
                         </div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
     else:
-        st.info(f"No leave requests found for {selected_year}.")
+        st.info(f"No leave requests found starting in {selected_year}.")
+
+
+    # --- NEW: Monthly Summary Table ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f"### 🗓️ Your Monthly Leave Breakdown for {selected_year}")
+
+    # This dictionary will group leave days by a unique key
+    monthly_data_groups = {} # Key: (month_num, reviewer_key, status, leave_type)
+    
+    # Iterate through all leaves that *overlap* with the selected year
+    for leave in user_leaves_year:
+        # Only process leaves that are Approved or Pending for this table
+        if leave.get('status') not in ['Approved', 'Pending']:
+            continue
+
+        try:
+            start_date = datetime.strptime(leave['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(leave['end_date'], '%Y-%m-%d').date()
+            
+            # Determine the grouping key for this leave
+            status = leave.get('status')
+            leave_type = leave.get('leave_type', 'N/A')
+            
+            if status == 'Approved':
+                # Group by the person who reviewed it
+                reviewer_key = leave.get('reviewed_by', 'Admin (Unknown)')
+            else: # status == 'Pending'
+                # Group all pending leaves together
+                reviewer_key = "Pending Approval"
+
+            # Iterate through each *day* of this leave
+            current_day = start_date
+            while current_day <= end_date:
+                # IMPORTANT: Only process days that are *in the selected year*
+                if current_day.year == selected_year:
+                    month_num = current_day.month
+                    day_num = current_day.day
+                    
+                    # Create the unique key
+                    group_key = (month_num, reviewer_key, status, leave_type)
+                    
+                    # Initialize the group if it's new
+                    if group_key not in monthly_data_groups:
+                        monthly_data_groups[group_key] = {
+                            "month_name": calendar.month_name[month_num],
+                            "days_set": set(),
+                            "leave_type": leave_type,
+                            "status": status,
+                            "reviewed_by": reviewer_key if status == 'Approved' else "N/A"
+                        }
+                    
+                    # Add the day number to the set for this group
+                    monthly_data_groups[group_key]["days_set"].add(day_num)
+                
+                current_day += timedelta(days=1)
+        
+        except (ValueError, TypeError):
+            continue # Skip malformed leave records
+
+    # --- Convert the grouped data into a flat list for the DataFrame ---
+    summary_table_data = []
+    
+    if not monthly_data_groups:
+        st.info(f"No Approved or Pending leaves found for {selected_year}.")
+    else:
+        # Sort the groups by month number (key[0])
+        for key in sorted(monthly_data_groups.keys()):
+            data = monthly_data_groups[key]
+            leave_days_str = ", ".join(str(d) for d in sorted(list(data["days_set"])))
+            
+            summary_table_data.append({
+                "Month": data["month_name"],
+                "Leave Type": data["leave_type"],
+                "Status": data["status"],
+                "Reviewed By / Status": data["reviewed_by"], # Combined field
+                "Total Days (Month)": len(data["days_set"]),
+                "Leave Days Filed": leave_days_str
+            })
+
+        df_monthly = pd.DataFrame(summary_table_data)
+
+        # --- Download Button for Monthly Summary ---
+        excel_data = to_excel(df_monthly) # Use the to_excel helper function
+        st.download_button(
+            label="📥 Download Monthly Summary as Excel",
+            data=excel_data,
+            file_name=f"{user['name']}_leave_summary_{selected_year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_monthly_excel"
+        )
+        
+        # Display the new monthly table
+        st.dataframe(
+            df_monthly,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Month": st.column_config.TextColumn("Month", width="medium"),
+                "Leave Type": st.column_config.TextColumn("Leave Type"),
+                "Status": st.column_config.TextColumn("Status"),
+                "Reviewed By / Status": st.column_config.TextColumn("Reviewed By / Status"),
+                "Total Days (Month)": st.column_config.TextColumn("Total Days"),
+                "Leave Days Filed": st.column_config.TextColumn("Leave Days", width="large"),
+            }
+        )
+    # --- END NEW: Monthly Summary Table ---
 
 def apply_leave():
     """Leave application form with duplicate check"""
@@ -814,14 +1166,17 @@ def apply_leave():
                         "reviewed_date": None
                     }
                     st.session_state.leaves.append(new_leave)
-                    save_leaves(st.session_state.leaves)
-                    st.success("✅ Leave request submitted successfully!")
-                    # Use st.experimental_rerun() or st.rerun() depending on your Streamlit version
-                    try:
-                       st.rerun() # Preferred for newer versions
-                    except AttributeError:
-                       st.experimental_rerun() # Fallback for older versions
+                    save_leaves(st.session_state.leaves) # Save the leave first
+                    
+                    # --- *** THIS IS THE ONLY CHANGE *** ---
+                    # Call the new Teams function instead of the email one
+                    send_teams_notification(new_leave) 
+                    # --- *** END OF CHANGE *** ---
 
+                    try:
+                       st.rerun() 
+                    except AttributeError:
+                       st.experimental_rerun()
 
     # --- Leave Balance Display (col2 remains the same) ---
     with col2:
@@ -849,8 +1204,17 @@ def apply_leave():
             </div>
         """, unsafe_allow_html=True)
 
+# --- Make sure to add this import at the TOP of your file ---
+import math
+# ---
+
 def admin_dashboard():
     """Display admin dashboard with year filter"""
+
+    # --- NEW: Initialize session state for pagination ---
+    if 'admin_month_leave_page' not in st.session_state:
+        st.session_state.admin_month_leave_page = 0
+    # --- END NEW ---
 
     # --- YEAR FILTER (Placed beside the welcome message) ---
     available_years = get_leave_years()
@@ -922,10 +1286,31 @@ def admin_dashboard():
                  # Skip leaves with invalid date format or type issues
                 continue
 
-    if leaves_this_month:
-        df_leaves_month = pd.DataFrame(leaves_this_month)
-        # Sort by leave start date for clarity
-        df_leaves_month = df_leaves_month.sort_values(by="Leave Start")
+    # --- START OF PAGINATION LOGIC ---
+    if not leaves_this_month:
+        st.info(f"No employees found on leave for {now.strftime('%B %Y')}.") # Display current month/year
+    else:
+        # Sort the *full* list before paginating
+        leaves_this_month.sort(key=lambda x: x.get('Leave Start', ''))
+
+        items_per_page = 10
+        page_num = st.session_state.admin_month_leave_page
+        total_leaves = len(leaves_this_month)
+        total_pages = math.ceil(total_leaves / items_per_page)
+        
+        # Safety check: if page number is out of bounds, reset to 0
+        if page_num >= total_pages:
+             page_num = 0
+             st.session_state.admin_month_leave_page = 0
+
+        # Calculate slice indices
+        start_index = page_num * items_per_page
+        end_index = (page_num + 1) * items_per_page
+        
+        # Get the slice of data for the current page
+        paginated_leaves = leaves_this_month[start_index:end_index]
+        
+        df_leaves_month = pd.DataFrame(paginated_leaves)
         st.dataframe(
             df_leaves_month,
             use_container_width=True,
@@ -935,30 +1320,32 @@ def admin_dashboard():
                  "Leave End": st.column_config.DateColumn("End Date", format="YYYY-MM-DD"),
                  "Date Requested": st.column_config.DateColumn("Applied On", format="YYYY-MM-DD"),
              }
-            )
-    else:
-        st.info(f"No employees found on leave for {now.strftime('%B %Y')}.") # Display current month/year
+        )
+        
+        # Display pagination controls
+        st.markdown(f"Showing **{start_index + 1}**–**{min(end_index, total_leaves)}** of **{total_leaves}** leaves.")
+        
+        col_prev, col_page, col_next = st.columns([2, 1, 2])
+
+        with col_prev:
+            if st.button("⬅️ Previous", disabled=(page_num == 0), use_container_width=True, key="prev_month_leave"):
+                st.session_state.admin_month_leave_page -= 1
+                st.rerun()
+
+        with col_next:
+            if st.button("Next ➡️", disabled=(page_num >= total_pages - 1), use_container_width=True, key="next_month_leave"):
+                st.session_state.admin_month_leave_page += 1
+                st.rerun()
+        
+        with col_page:
+            st.markdown(f"<div style='text-align: center; margin-top: 5px;'>Page {page_num + 1} of {total_pages}</div>", unsafe_allow_html=True)
+    # --- END OF PAGINATION LOGIC ---
 
     st.markdown("<hr style='margin-top: 20px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
     # --- Yearly Overview Section ---
     st.markdown("#### 📊 Yearly Overview")
-
-    # --- YEAR FILTER ---
-    available_years = get_leave_years()
-    default_year = 2025
-    try:
-        default_index = available_years.index(default_year)
-    except ValueError:
-        default_index = 0 # Default to the latest year if 2025 isn't available
-
-    # selected_year = st.selectbox(
-    #     "Select Year for Overview:",
-    #     options=available_years,
-    #     index=default_index,
-    #     key="admin_year_filter"
-    # )
-
+    
     # Filter leaves based on selected year, handling potential errors
     year_leaves = []
     for l in all_leaves_data:
@@ -1035,10 +1422,8 @@ def admin_dashboard():
             status_data = {"Status": ["Pending", "Approved", "Rejected"],
                            "Count": [len(pending_leaves), len(approved_leaves), len(rejected_leaves)]}
             df_status = pd.DataFrame(status_data)
-            # Filter out statuses with zero count for a cleaner bar chart if desired
-            # df_status = df_status[df_status['Count'] > 0]
 
-            if not df_status.empty:
+            if not df_status[df_status['Count'] > 0].empty: # Only plot if there's data
                 fig_bar = px.bar(
                     df_status, x="Status", y="Count", color="Status",
                     color_discrete_map={"Pending": "#f59e0b", "Approved": "#10b981", "Rejected": "#ef4444"},
@@ -1047,11 +1432,9 @@ def admin_dashboard():
                 fig_bar.update_layout(showlegend=False, height=350, margin=dict(t=40, b=10, l=10, r=10), title_x=0.5)
                 st.plotly_chart(fig_bar, use_container_width=True)
             else:
-                 st.info(f"No leave status data to plot for {selected_year}.") # Should not happen if year_leaves is not empty
+                 st.info(f"No leave status data to plot for {selected_year}.")
         else:
             st.info(f"No leave data to plot status for {selected_year}.")
-
-# --- Inside admin_dashboard function ---
 
     st.markdown(f"##### 📅 Monthly Leave Trends ({selected_year})")
     
@@ -1157,7 +1540,7 @@ def manage_leaves():
                 </div>
             """, unsafe_allow_html=True)
             
-# --- Inside manage_leaves function, within the loop for each leave ---
+# --- Inside manage_leaves function, within the loop for each leave ---# --- Inside manage_leaves function, within the loop for each leave ---
 
             if leave['status'] == 'Pending':
                 col1_btn, col2_btn, col_spacer = st.columns([1, 1, 4]) # Renamed col variables for clarity
@@ -1167,6 +1550,7 @@ def manage_leaves():
                         leave_updated = False
                         user_updated = False
                         error_occurred = False
+                        l_record_to_notify = None # Store the record to notify
 
                         # Find the specific leave record in the session state list
                         for index, l_record in enumerate(st.session_state.leaves):
@@ -1175,6 +1559,7 @@ def manage_leaves():
                                 l_record['status'] = 'Approved'
                                 l_record['reviewed_by'] = st.session_state.user.get('name', 'Unknown Admin') # Safer access
                                 l_record['reviewed_date'] = datetime.now().strftime("%Y-%m-%d")
+                                l_record_to_notify = l_record.copy() # Copy the updated record
                                 leave_updated = True
                                 print(f"DEBUG: Updated leave record in session state (id: {leave['id']})") # Debug print
 
@@ -1196,11 +1581,12 @@ def manage_leaves():
                                             user_to_update['used_sick'] = current_used + int(leave_days)
                                             user_updated = True
                                         else:
-                                             # Handle other leave types if they affect balances
+                                             # Handle other leave types (e.g., Unpaid) that don't affect balance
+                                             user_updated = True # Set to True to allow saving
                                              pass
-                                             
+                                        
                                         if user_updated:
-                                             print(f"DEBUG: Updated user balance for {user_email}") # Debug print
+                                             print(f"DEBUG: Updated user balance (if applicable) for {user_email}") # Debug print
                                              
                                     except (ValueError, TypeError) as e:
                                         st.error(f"Error calculating leave balance for {user_email}: {e}")
@@ -1219,20 +1605,16 @@ def manage_leaves():
                                 save_leaves(st.session_state.leaves) # Save updated leaves list
                                 print("DEBUG: Attempting to save users...") # Debug print
                                 save_users(st.session_state.users)   # Save updated users dictionary
+                                
+                                # --- Send Notification ---
+                                if l_record_to_notify:
+                                    send_teams_notification(l_record_to_notify, is_update=True) 
+                                
                                 st.success(f"Leave request ID {leave['id']} approved successfully!")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"An error occurred during saving: {e}")
-                                # Optionally attempt to revert changes in session state if save fails? (More complex)
-                        elif leave_updated and not user_updated and not error_occurred:
-                             # Case where leave type didn't affect balance (e.g., Unpaid)
-                             try:
-                                print("DEBUG: Saving leaves (user balance not affected)...") # Debug print
-                                save_leaves(st.session_state.leaves)
-                                st.success(f"Leave request ID {leave['id']} approved successfully! (User balance unaffected)")
-                                st.rerun()
-                             except Exception as e:
-                                st.error(f"An error occurred during saving leaves: {e}")
+                        
                         elif not leave_updated:
                             st.error(f"Error: Could not find leave request ID {leave['id']} to approve.")
                         # Else: An error occurred during user update, error message already shown. Do not save.
@@ -1242,11 +1624,14 @@ def manage_leaves():
                     # --- Reject Button Logic (ensure reviewed_date uses strftime) ---
                     if st.button(f"❌ Reject", key=f"reject_{leave['id']}"):
                         leave_rejected = False
+                        l_record_to_notify = None # Store the record to notify
+                        
                         for index, l_record in enumerate(st.session_state.leaves):
                              if l_record.get('id') == leave['id']:
                                 l_record['status'] = 'Rejected'
                                 l_record['reviewed_by'] = st.session_state.user.get('name', 'Unknown Admin')
                                 l_record['reviewed_date'] = datetime.now().strftime("%Y-%m-%d") # Ensure strftime here too
+                                l_record_to_notify = l_record.copy() # Copy the updated record
                                 leave_rejected = True
                                 print(f"DEBUG: Updated leave record to Rejected in session state (id: {leave['id']})") # Debug print
                                 break
@@ -1255,6 +1640,11 @@ def manage_leaves():
                             try:
                                 print("DEBUG: Attempting to save rejected leave...") # Debug print
                                 save_leaves(st.session_state.leaves) # Only save leaves, user balance not affected
+                                
+                                # --- Send Notification ---
+                                if l_record_to_notify:
+                                    send_teams_notification(l_record_to_notify, is_update=True)
+
                                 st.warning(f"Leave request ID {leave['id']} rejected.")
                                 st.rerun()
                             except Exception as e:
@@ -1263,42 +1653,74 @@ def manage_leaves():
                              st.error(f"Error: Could not find leave request ID {leave['id']} to reject.")
             
             elif leave['status'] in ['Approved', 'Rejected']:
+                # Ensure reviewed_by and reviewed_date exist before displaying
+                reviewed_by = leave.get('reviewed_by', 'N/A')
+                reviewed_date = leave.get('reviewed_date', 'N/A')
                 st.markdown(f"""
                     <div style='color: #64748b; font-size: 0.9rem; margin-top: 10px;'>
-                        ✓ Reviewed by {leave['reviewed_by']} on {leave['reviewed_date']}
+                        ✓ Reviewed by {reviewed_by} on {reviewed_date}
                     </div>
                 """, unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
 
+# Make sure these are imported at the top of your file
+import io
+import pandas as pd
+from datetime import datetime, date, timedelta
+import calendar
+import plotly.express as px # Ensure px is imported
+
+# ... (Make sure your helper functions to_excel and get_leave_days_for_month exist) ...
+
 def view_employees():
-    """Admin page to view all employees and their year-specific leave balances"""
+    """Admin page to view all employees and their year/month-specific leave balances"""
     st.markdown("### 👥 Employee Leave Overview")
 
-    # --- YEAR FILTER ---
-    available_years = get_leave_years()
-    default_year = 2025
-    try:
-        default_index = available_years.index(default_year)
-    except ValueError:
-        default_index = 0
+    # --- FILTERS ---
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # --- YEAR FILTER ---
+        available_years = get_leave_years()
+        default_year = 2025
+        try:
+            default_index = available_years.index(default_year)
+        except ValueError:
+            default_index = 0
+        selected_year = st.selectbox(
+            "📅 Select Year:",
+            options=available_years,
+            index=default_index,
+            key="employee_year_filter"
+        )
+    
+    with col2:
+        # --- MONTH FILTER ---
+        month_names = list(calendar.month_name)[1:] # Get month names [Jan, Feb, ...]
+        month_options = ["All Months"] + month_names
+        selected_month_name = st.selectbox(
+            "🗓️ Select Month:",
+            options=month_options,
+            key="employee_month_filter"
+        )
+        
+    month_map = {name: num for num, name in enumerate(month_names, 1)}
+    selected_month_num = month_map.get(selected_month_name, 0)
+    # --- END FILTERS ---
 
-    selected_year = st.selectbox(
-        "📅 Select Year:",
-        options=available_years,
-        index=default_index,
-        key="employee_year_filter"
-    )
     st.markdown("<hr style='margin-top: 0; margin-bottom: 20px;'>", unsafe_allow_html=True)
-    # --- END YEAR FILTER ---
-
-    st.markdown(f"#### Data for {selected_year}")
+    
+    if selected_month_name == "All Months":
+        st.markdown(f"#### Data for {selected_year}")
+    else:
+        st.markdown(f"#### Data for {selected_month_name} {selected_year}")
 
     employees_data = []
     all_leaves_data = st.session_state.get('leaves', [])
     users_data = st.session_state.get('users', {})
 
-    # Pre-filter leaves for the selected year for efficiency
+    # Pre-filter leaves for the selected year
     leaves_in_year = []
     for l in all_leaves_data:
         start_date_str = l.get('start_date')
@@ -1307,10 +1729,10 @@ def view_employees():
                 if datetime.strptime(start_date_str, '%Y-%m-%d').year == selected_year:
                     leaves_in_year.append(l)
              except ValueError:
-                 continue # Skip invalid date format
+                 continue
 
+    # --- DATA PROCESSING LOOP ---
     for email, user in users_data.items():
-        # Filter leaves for the current user AND selected year
         user_leaves_year = [l for l in leaves_in_year if l.get('user_email') == email]
         approved_user_leaves_year = [l for l in user_leaves_year if l.get('status') == 'Approved']
 
@@ -1318,23 +1740,28 @@ def view_employees():
         year_specific_annual_used = sum(l.get('days', 0) for l in approved_user_leaves_year if l.get('leave_type') == 'Annual Leave')
         year_specific_sick_used = sum(l.get('days', 0) for l in approved_user_leaves_year if l.get('leave_type') == 'Sick Leave')
 
-        # Use total allocated leave from the user profile (ensure it's an int, default to 0)
         annual_allocated = int(user.get('annual_leave', 0))
         sick_allocated = int(user.get('sick_leave', 0))
 
-        # Calculate year-specific remaining balances
         year_specific_annual_remaining = annual_allocated - year_specific_annual_used
         year_specific_sick_remaining = sick_allocated - year_specific_sick_used
 
-        # Calculate year-specific request counts
         year_specific_total_requests = len(user_leaves_year)
         year_specific_pending = len([l for l in user_leaves_year if l.get('status') == 'Pending'])
 
-        employees_data.append({
+        # Get leave days for the selected month
+        leave_days_str = get_leave_days_for_month(
+            user_leaves_year, 
+            selected_year, 
+            selected_month_num
+        )
+        
+        employee_row = {
             "Name": user.get('name', 'N/A'),
             "Email": email,
             "Department": user.get('department', 'N/A'),
             "Position": user.get('position', 'N/A'),
+            f"Leave Days ({selected_month_name})": leave_days_str,
             f"Annual Used ({selected_year})": year_specific_annual_used,
             f"Annual Remaining ({selected_year})": year_specific_annual_remaining,
             "Annual Allocated": annual_allocated,
@@ -1343,133 +1770,178 @@ def view_employees():
             "Sick Allocated": sick_allocated,
             f"Total Requests ({selected_year})": year_specific_total_requests,
             f"Pending ({selected_year})": year_specific_pending
-        })
+        }
+
+        # --- NEW FILTERING LOGIC ---
+        if selected_month_num == 0:
+            # If "All Months", always add the employee
+            employees_data.append(employee_row)
+        elif leave_days_str: 
+            # If a specific month is selected, ONLY add if they have leave days
+            employees_data.append(employee_row)
+        # --- END NEW FILTERING LOGIC ---
+    
+    # --- END DATA PROCESSING LOOP ---
 
     df = pd.DataFrame(employees_data)
 
-    # --- FIX: Convert max values to standard int ---
-    # Calculate max values safely, converting potential numpy types to int
-    # Use 1 as a fallback if the DataFrame is empty or max calculation fails
-    max_annual_allocated = 1
-    if not df.empty and "Annual Allocated" in df.columns:
-        try:
-             # Ensure the column exists and has values before calling max()
-             if not df["Annual Allocated"].empty:
-                 max_annual_allocated = int(max(df["Annual Allocated"].max(), 1)) # Convert here
-        except Exception: # Catch potential errors during max()
-             pass # Keep the default value of 1
+    # --- NEW DISPLAY LOGIC ---
+    if df.empty:
+        if selected_month_num != 0:
+            # Show message if a specific month was selected and no leaves were found
+            st.info(f"No employees have filed leave for {selected_month_name} {selected_year}.")
+        else:
+            # Show this if "All Months" is selected but no users exist at all
+            st.info(f"No employee data found.")
+    else:
+        # --- If DataFrame is NOT empty, show everything ---
+        
+        # --- EXCEL DOWNLOAD BUTTON ---
+        excel_data = to_excel(df)
+        st.download_button(
+            label="📥 Download as Excel",
+            data=excel_data,
+            file_name=f"employee_leave_overview_{selected_year}_{selected_month_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_button"
+        )
+        
+        # --- MAX VALUE FIX ---
+        max_annual_allocated = 1
+        if not df.empty and "Annual Allocated" in df.columns:
+            try:
+                 if not df["Annual Allocated"].empty:
+                     max_annual_allocated = int(max(df["Annual Allocated"].max(), 1)) 
+            except Exception:
+                 pass 
 
-    max_sick_allocated = 1
-    if not df.empty and "Sick Allocated" in df.columns:
-         try:
-             if not df["Sick Allocated"].empty:
-                 max_sick_allocated = int(max(df["Sick Allocated"].max(), 1)) # Convert here
-         except Exception:
-             pass
-    # --- END FIX ---
+        max_sick_allocated = 1
+        if not df.empty and "Sick Allocated" in df.columns:
+             try:
+                 if not df["Sick Allocated"].empty:
+                     max_sick_allocated = int(max(df["Sick Allocated"].max(), 1)) 
+             except Exception:
+                 pass
+        # --- END MAX VALUE FIX ---
 
-
-    # Adjust dataframe display configuration for new columns
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
+        # --- Define column configuration ---
+        column_config_dict = {
             "Name": st.column_config.TextColumn("Name", width="medium"),
             "Email": st.column_config.TextColumn("Email", width="medium"),
             "Department": st.column_config.TextColumn("Department", width="small"),
             "Position": st.column_config.TextColumn("Position", width="medium"),
-             f"Annual Remaining ({selected_year})": st.column_config.ProgressColumn(
+            f"Leave Days ({selected_month_name})": st.column_config.TextColumn(
+                f"Leave Days ({selected_month_name})", 
+                help="Days of the selected month the employee has filed for leave (Approved or Pending).",
+                width="medium"
+            ),
+            f"Annual Remaining ({selected_year})": st.column_config.ProgressColumn(
                 f"Annual Rem. ({selected_year})",
                 help=f"Remaining Annual Leave days for {selected_year} (based on total allocation)",
-                format="%d days",
-                min_value=0,
-                max_value=max_annual_allocated, # Use converted int value
+                format="%d days", min_value=0, max_value=max_annual_allocated,
             ),
-             f"Sick Remaining ({selected_year})": st.column_config.ProgressColumn(
+            f"Sick Remaining ({selected_year})": st.column_config.ProgressColumn(
                 f"Sick Rem. ({selected_year})",
                 help=f"Remaining Sick Leave days for {selected_year} (based on total allocation)",
-                format="%d days",
-                min_value=0,
-                max_value=max_sick_allocated, # Use converted int value
+                format="%d days", min_value=0, max_value=max_sick_allocated,
             ),
-             f"Annual Used ({selected_year})": st.column_config.NumberColumn(f"Annual Used ({selected_year})", format="%d days"),
-             f"Sick Used ({selected_year})": st.column_config.NumberColumn(f"Sick Used ({selected_year})", format="%d days"),
-             "Annual Allocated": st.column_config.NumberColumn("Annual Alloc.", format="%d days"),
-             "Sick Allocated": st.column_config.NumberColumn("Sick Alloc.", format="%d days"),
-             f"Total Requests ({selected_year})": st.column_config.NumberColumn(f"Total Req. ({selected_year})"),
-             f"Pending ({selected_year})": st.column_config.NumberColumn(f"Pending ({selected_year})"),
+            f"Annual Used ({selected_year})": st.column_config.NumberColumn(f"Annual Used ({selected_year})", format="%d days"),
+            f"Sick Used ({selected_year})": st.column_config.NumberColumn(f"Sick Used ({selected_year})", format="%d days"),
+            "Annual Allocated": st.column_config.NumberColumn("Annual Alloc.", format="%d days"),
+            "Sick Allocated": st.column_config.NumberColumn("Sick Alloc.", format="%d days"),
+            f"Total Requests ({selected_year})": st.column_config.NumberColumn(f"Total Req. ({selected_year})"),
+            f"Pending ({selected_year})": st.column_config.NumberColumn(f"Pending ({selected_year})"),
         }
-    )
+        
+        # Define the order of columns
+        column_order = [
+            "Name", "Email", "Department", "Position",
+            f"Leave Days ({selected_month_name})",
+            f"Annual Used ({selected_year})",
+            f"Annual Remaining ({selected_year})",
+            "Annual Allocated",
+            f"Sick Used ({selected_year})",
+            f"Sick Remaining ({selected_year})",
+            "Sick Allocated",
+            f"Total Requests ({selected_year})",
+            f"Pending ({selected_year})"
+        ]
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(f"### 📊 Department-wise Leave Analysis ({selected_year})")
+        # Hide the 'Leave Days' column if "All Months" is selected
+        if selected_month_num == 0:
+            column_order.remove(f"Leave Days ({selected_month_name})")
+            del column_config_dict[f"Leave Days ({selected_month_name})"]
 
-    dept_data_year = {}
-    # Iterate through users to ensure all departments are potentially included
-    for email, user in users_data.items():
-        dept = user.get('department', 'Unassigned')
-        if dept not in dept_data_year:
-            dept_data_year[dept] = {
-                'total_employees': 0, # Count employees in dept regardless of leave
-                'year_annual_used': 0,
-                'year_sick_used': 0
-            }
-        dept_data_year[dept]['total_employees'] += 1
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_config_dict,
+            column_order=column_order 
+        )
 
-    # Aggregate year-specific leave usage by department from approved leaves
-    for leave in leaves_in_year:
-         if leave.get('status') == 'Approved':
-            user_email = leave.get('user_email')
-            if user_email and user_email in users_data:
-                dept = users_data[user_email].get('department', 'Unassigned')
-                if dept in dept_data_year:
-                    leave_days = leave.get('days', 0)
-                    if leave.get('leave_type') == 'Annual Leave':
-                        dept_data_year[dept]['year_annual_used'] += leave_days
-                    elif leave.get('leave_type') == 'Sick Leave':
-                        dept_data_year[dept]['year_sick_used'] += leave_days
+        # --- Department-wise analysis ---
+        # This will still show the analysis for the *entire year*,
+        # which is usually what's desired for the summary chart.
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f"### 📊 Department-wise Leave Analysis ({selected_year})")
+        
+        dept_data_year = {}
+        for email, user in users_data.items():
+            dept = user.get('department', 'Unassigned')
+            if dept not in dept_data_year:
+                dept_data_year[dept] = {
+                    'total_employees': 0,
+                    'year_annual_used': 0,
+                    'year_sick_used': 0
+                }
+            dept_data_year[dept]['total_employees'] += 1
 
-    dept_df_list = []
-    for dept, data in dept_data_year.items():
-        total_employees_in_dept = data.get('total_employees', 0)
-        if total_employees_in_dept > 0:
-            avg_annual = round(data.get('year_annual_used', 0) / total_employees_in_dept, 1)
-            avg_sick = round(data.get('year_sick_used', 0) / total_employees_in_dept, 1)
+        for leave in leaves_in_year:
+             if leave.get('status') == 'Approved':
+                user_email = leave.get('user_email')
+                if user_email and user_email in users_data:
+                    dept = users_data[user_email].get('department', 'Unassigned')
+                    if dept in dept_data_year:
+                        leave_days = leave.get('days', 0)
+                        if leave.get('leave_type') == 'Annual Leave':
+                            dept_data_year[dept]['year_annual_used'] += leave_days
+                        elif leave.get('leave_type') == 'Sick Leave':
+                            dept_data_year[dept]['year_sick_used'] += leave_days
+
+        dept_df_list = []
+        for dept, data in dept_data_year.items():
+            total_employees_in_dept = data.get('total_employees', 0)
+            avg_annual = round(data.get('year_annual_used', 0) / total_employees_in_dept, 1) if total_employees_in_dept > 0 else 0
+            avg_sick = round(data.get('year_sick_used', 0) / total_employees_in_dept, 1) if total_employees_in_dept > 0 else 0
+
+            dept_df_list.append({
+                'Department': dept,
+                'Employees': total_employees_in_dept,
+                f'Avg Annual Used ({selected_year})': avg_annual,
+                f'Avg Sick Used ({selected_year})': avg_sick,
+                f'Total Leave Days ({selected_year})': data.get('year_annual_used', 0) + data.get('year_sick_used', 0)
+            })
+
+        dept_df_year = pd.DataFrame(dept_df_list)
+
+        if not dept_df_year.empty:
+            fig_dept = px.bar(
+                dept_df_year,
+                x='Department',
+                y=[f'Avg Annual Used ({selected_year})', f'Avg Sick Used ({selected_year})'],
+                barmode='group',
+                color_discrete_sequence=['#667eea', '#f093fb'],
+                labels={ "value": "Average Days Used per Employee", "variable": "Leave Type"},
+                title=f"Department Leave Usage Analysis for {selected_year}"
+            )
+            fig_dept.update_layout(
+                xaxis_title="Department", yaxis_title="Average Days Used",
+                legend_title="Leave Type", height=400, title_x=0.5
+            )
+            st.plotly_chart(fig_dept, use_container_width=True)
         else:
-            avg_annual = 0
-            avg_sick = 0
-
-        dept_df_list.append({
-            'Department': dept,
-            'Employees': total_employees_in_dept,
-            f'Avg Annual Used ({selected_year})': avg_annual,
-            f'Avg Sick Used ({selected_year})': avg_sick,
-            f'Total Leave Days ({selected_year})': data.get('year_annual_used', 0) + data.get('year_sick_used', 0)
-        })
-
-    dept_df_year = pd.DataFrame(dept_df_list)
-
-    if not dept_df_year.empty:
-        # Filter out departments with 0 employees if desired before plotting
-        # dept_df_year = dept_df_year[dept_df_year['Employees'] > 0]
-
-        fig_dept = px.bar(
-            dept_df_year,
-            x='Department',
-            y=[f'Avg Annual Used ({selected_year})', f'Avg Sick Used ({selected_year})'],
-            barmode='group',
-            color_discrete_sequence=['#667eea', '#f093fb'],
-            labels={ "value": "Average Days Used per Employee", "variable": "Leave Type"},
-            title=f"Department Leave Usage Analysis for {selected_year}"
-        )
-        fig_dept.update_layout(
-            xaxis_title="Department", yaxis_title="Average Days Used",
-            legend_title="Leave Type", height=400, title_x=0.5
-        )
-        st.plotly_chart(fig_dept, use_container_width=True)
-    else:
-        st.info(f"No department leave data to display for {selected_year}.")
+            st.info(f"No department leave data to display for {selected_year}.")
 
 def manage_users():
     """Admin page to manage users (add, edit, delete)"""
